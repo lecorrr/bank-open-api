@@ -16,7 +16,10 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-/** The package rules of ARCHITECTURE.md, checked on the imports of the main sources. */
+/**
+ * The package rules of ARCHITECTURE.md, checked on the imports of the main sources. "api" is the code generated
+ * from the contract, which only the controllers' packages use.
+ */
 class LayeringTest {
 
     private static final Path MAIN_SOURCES = Path.of("src", "main", "java", "dev", "tkachuk", "openbanking");
@@ -26,7 +29,13 @@ class LayeringTest {
     private static final Map<String, Set<String>> MAY_DEPEND_ON = Map.of(
             "common", Set.of(),
             "bankcore", Set.of("common"),
-            "accounts", Set.of("common", "bankcore"));
+            "consents", Set.of("common", "api"),
+            "accounts", Set.of("common", "bankcore", "consents", "api"));
+
+    // Which package alone may use a kind of outside access: HTTP calls to bank-core, and SQL.
+    private static final Map<String, String> ONLY_PACKAGE_USING = Map.of(
+            "org.springframework.web.client.", "bankcore",
+            "org.springframework.jdbc.", "consents");
 
     private static List<SourceFile> sources;
 
@@ -71,17 +80,19 @@ class LayeringTest {
     }
 
     @Test
-    void shouldCallBankCoreOnlyFromBankcorePackage() {
+    void shouldKeepHttpClientsAndSqlInTheirPackages() {
         List<String> violations = new ArrayList<>();
         for (SourceFile source : sources) {
             for (String imported : source.imports()) {
-                if (imported.startsWith("org.springframework.web.client.") && !source.module().equals("bankcore")) {
-                    violations.add(source.relativePath() + " imports " + imported);
-                }
+                ONLY_PACKAGE_USING.forEach((prefix, owner) -> {
+                    if (imported.startsWith(prefix) && !source.module().equals(owner)) {
+                        violations.add(source.relativePath() + " imports " + imported);
+                    }
+                });
             }
         }
 
-        assertThat(violations).as("HTTP clients outside the bankcore package").isEmpty();
+        assertThat(violations).as("HTTP clients outside bankcore or SQL outside consents").isEmpty();
     }
 
     private static String moduleOf(String imported) {

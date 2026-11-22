@@ -12,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jayway.jsonpath.JsonPath;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,11 +20,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 
+/** The whole service on a random port, with PostgreSQL in Testcontainers and WireMock in place of bank-core. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Import(BankCoreStub.class)
+@Import({PostgresTestcontainer.class, BankCoreStub.class})
 class BankOpenApiIT {
 
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
@@ -37,53 +41,83 @@ class BankOpenApiIT {
     @Autowired
     private WireMockServer bankCore;
 
+    @Autowired
+    private JdbcClient jdbc;
+
     private RestClient api;
 
     @BeforeEach
     void setUp() {
         bankCore.resetAll();
-        api = RestClient.create("http://localhost:" + port);
+        bankCoreKeeps(IBAN_A, "UAH", "850.00");
+        bankCoreKeeps(IBAN_B, "USD", "10.00");
+        api = RestClient.builder().baseUrl("http://localhost:" + port).defaultHeader("X-Request-ID", REQUEST_ID)
+                .build();
     }
 
     @Test
-    void shouldListBankCoreAccountsThroughTheApi() {
-        bankCoreHasAccounts();
+    void shouldReadAccountsOnlyWhileTheConsentIsValid() {
+        String consentId = createConsent(4);
+        assertThat(consentStatus(consentId)).isEqualTo("received");
+        assertRefused(read("/v2/accounts", consentId), 401, "CONSENT_INVALID");
 
-        ResponseEntity<String> response = api.get().uri("/v2/accounts").header("X-Request-ID", REQUEST_ID)
-                .retrieve().toEntity(String.class);
+        customerApproves(consentId);
 
-        assertThat(response.getStatusCode().value()).isEqualTo(200);
-        assertThat(response.getHeaders().getFirst("X-Request-ID")).isEqualTo(REQUEST_ID);
-        List<String> ibans = JsonPath.read(response.getBody(), "$.accounts[*].iban");
+        ResponseEntity<String> list = read("/v2/accounts?withBalance=true", consentId);
+        assertThat(list.getStatusCode().value()).isEqualTo(200);
+        List<String> ibans = JsonPath.read(list.getBody(), "$.accounts[*].iban");
         assertThat(ibans).containsExactly(IBAN_A, IBAN_B);
-        String currency = JsonPath.read(response.getBody(), "$.accounts[1].currency");
-        assertThat(currency).isEqualTo("USD");
+        String amountA = JsonPath.read(list.getBody(), "$.accounts[0].balances[0].balanceAmount.amount");
+        assertThat(amountA).isEqualTo("850.00");
+        String resourceB = JsonPath.read(list.getBody(), "$.accounts[1].resourceId");
+
+        ResponseEntity<String> balances = read("/v2/accounts/" + resourceB + "/balances", consentId);
+        assertThat(balances.getStatusCode().value()).isEqualTo(200);
+        String amountB = JsonPath.read(balances.getBody(), "$.balances[0].balanceAmount.amount");
+        assertThat(amountB).isEqualTo("10.00");
+
+        ResponseEntity<Void> deleted = api.delete().uri("/v2/consents/account-access/{id}", consentId)
+                .retrieve().toBodilessEntity();
+        assertThat(deleted.getStatusCode().value()).isEqualTo(204);
+        assertThat(consentStatus(consentId)).isEqualTo("terminatedByTpp");
+        assertRefused(read("/v2/accounts", consentId), 401, "CONSENT_INVALID");
+    }
+
+    @Test
+    void shouldLimitReadsWithoutTheCustomerToFrequencyPerDay() {
+        String consentId = createConsent(2);
+        customerApproves(consentId);
+
+        assertThat(read("/v2/accounts", consentId).getStatusCode().value()).isEqualTo(200);
+        assertThat(read("/v2/accounts", consentId).getStatusCode().value()).isEqualTo(200);
+        assertRefused(read("/v2/accounts", consentId), 429, "ACCESS_EXCEEDED");
+
+        ResponseEntity<String> byCustomer = api.get().uri("/v2/accounts").header("Consent-ID", consentId)
+                .header("PSU-IP-Address", "192.0.2.10").retrieve().toEntity(String.class);
+        assertThat(byCustomer.getStatusCode().value()).isEqualTo(200);
     }
 
     @Test
     void shouldContinueTheProvidersTraceAndPassItsRequestIdToBankCore() {
-        bankCoreHasAccounts();
+        String consentId = createConsent(4);
+        customerApproves(consentId);
 
-        api.get().uri("/v2/accounts").header("X-Request-ID", REQUEST_ID)
+        api.get().uri("/v2/accounts").header("Consent-ID", consentId)
                 .header("traceparent", "00-" + TRACE_ID + "-b7ad6b7169203331-01")
                 .retrieve().toBodilessEntity();
 
-        bankCore.verify(getRequestedFor(urlEqualTo("/api/v1/accounts"))
+        bankCore.verify(getRequestedFor(urlEqualTo("/api/v1/accounts/" + IBAN_A))
                 .withHeader("X-Request-Id", equalTo(REQUEST_ID))
                 .withHeader("traceparent", matching("00-" + TRACE_ID + "-[0-9a-f]{16}-01")));
     }
 
     @Test
     void shouldAnswer503WhenBankCoreFails() {
-        bankCore.stubFor(get(urlEqualTo("/api/v1/accounts")).willReturn(serverError()));
+        String consentId = createConsent(4);
+        customerApproves(consentId);
+        bankCore.stubFor(get(urlEqualTo("/api/v1/accounts/" + IBAN_A)).willReturn(serverError()));
 
-        ResponseEntity<String> response = api.get().uri("/v2/accounts").header("X-Request-ID", REQUEST_ID)
-                .retrieve().onStatus(HttpStatusCode::isError, (request, answer) -> { })
-                .toEntity(String.class);
-
-        assertThat(response.getStatusCode().value()).isEqualTo(503);
-        String code = JsonPath.read(response.getBody(), "$.code");
-        assertThat(code).isEqualTo("SERVICE_UNAVAILABLE");
+        assertRefused(read("/v2/accounts", consentId), 503, "SERVICE_UNAVAILABLE");
     }
 
     @Test
@@ -94,12 +128,51 @@ class BankOpenApiIT {
         assertThat(status).isEqualTo("UP");
     }
 
-    private void bankCoreHasAccounts() {
-        bankCore.stubFor(get(urlEqualTo("/api/v1/accounts")).willReturn(okJson("""
-                [{"iban": "%s", "holderName": "Test Holder", "currency": "UAH", "balance": 850.00,
-                  "createdAt": "2026-11-20T08:00:00Z"},
-                 {"iban": "%s", "holderName": "Test Holder", "currency": "USD", "balance": 10.00,
-                  "createdAt": "2026-11-20T08:00:01Z"}]
-                """.formatted(IBAN_A, IBAN_B))));
+    private String createConsent(int frequencyPerDay) {
+        String body = """
+                {"access": {"payments": [
+                     {"account": {"iban": "%s"}, "rights": ["accountDetails", "balances"]},
+                     {"account": {"iban": "%s", "currency": "USD"}, "rights": ["balances"]}]},
+                 "consentType": "detailed", "recurringIndicator": true, "validTo": "9999-12-31",
+                 "frequencyPerDay": %d}
+                """.formatted(IBAN_A, IBAN_B, frequencyPerDay);
+        ResponseEntity<String> response = api.post().uri("/v2/consents/account-access")
+                .header("PSU-IP-Address", "192.0.2.10").contentType(MediaType.APPLICATION_JSON).body(body)
+                .retrieve().toEntity(String.class);
+        assertThat(response.getStatusCode().value()).isEqualTo(201);
+        return JsonPath.read(response.getBody(), "$.consentId");
+    }
+
+    // The customer's approval page comes in step 4; until then the test approves in the database.
+    private void customerApproves(String consentId) {
+        int approved = jdbc.sql("UPDATE consent SET status = 'valid' WHERE id = :id AND status = 'received'")
+                .param("id", UUID.fromString(consentId))
+                .update();
+        assertThat(approved).isEqualTo(1);
+    }
+
+    private String consentStatus(String consentId) {
+        String body = api.get().uri("/v2/consents/account-access/{id}/status", consentId).retrieve()
+                .body(String.class);
+        return JsonPath.read(body, "$.consentStatus");
+    }
+
+    private ResponseEntity<String> read(String path, String consentId) {
+        return api.get().uri(path).header("Consent-ID", consentId).retrieve()
+                .onStatus(HttpStatusCode::isError, (request, response) -> { })
+                .toEntity(String.class);
+    }
+
+    private static void assertRefused(ResponseEntity<String> response, int status, String code) {
+        assertThat(response.getStatusCode().value()).isEqualTo(status);
+        String answeredCode = JsonPath.read(response.getBody(), "$.code");
+        assertThat(answeredCode).isEqualTo(code);
+    }
+
+    private void bankCoreKeeps(String iban, String currency, String balance) {
+        bankCore.stubFor(get(urlEqualTo("/api/v1/accounts/" + iban)).willReturn(okJson("""
+                {"iban": "%s", "holderName": "Test Holder", "currency": "%s", "balance": %s,
+                 "createdAt": "2026-11-20T08:00:00Z"}
+                """.formatted(iban, currency, balance))));
     }
 }

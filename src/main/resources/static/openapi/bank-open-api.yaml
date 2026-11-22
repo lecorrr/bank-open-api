@@ -1,0 +1,2539 @@
+# The operations bank-open-api offers, taken from GD Next's Openbanking Ukraine specification
+# (https://github.com/GDNext-GmbH/Open-Banking-Ukraine, commit b30abe5), Apache License 2.0, see
+# LICENSE-openbanking-ukraine.txt next to this file. Changed from the original: only these operations;
+# only the request headers the bank reads; no examples; own info, servers and tags.
+openapi: 3.0.1
+info:
+  title: bank-open-api
+  version: 0.2.0
+  description: |
+    The bank's open banking API: the operations bank-open-api offers, taken from GD Next's
+    "Openbanking Ukraine" 2.0 specification, which is based on the Berlin Group's NextGenPSD2.
+  license:
+    name: Apache License 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+- url: http://localhost:8480
+  description: the k3d cluster, through Traefik
+- url: http://localhost:8090
+  description: bank-open-api run on this machine
+tags:
+- name: Consents
+- name: Accounts
+paths:
+  /v2/consents/account-access:
+    post:
+      summary: Create Account Access consent
+      description: |
+        Creates an account information consent resource at the ASPSP regarding access to accounts types and accounts
+        specified in this request.
+
+        **Side Effects**
+        When this Consent Request is a request where the "recurringIndicator" equals true, and if it exists already a
+        former consent for recurring access on account information for the addressed PSU and potentially addressed
+        corporate identification submitted by this API Client, then the former consent automatically expires as soon
+        as the new consent request is authorised by the PSU.
+        Please note that in the context of multilevel SCA, the side effect may only apply, if a PSU with a given PSU-ID
+        is submitting a new recurring consent and a second recurring consent exists already which had been submitted
+        under the same PSU and potentially corporate identification.
+        There are no expiration side effects foreseen for Consent Requests where the "recurringIndicator" equals false.
+      operationId: createAccountAccessConsent
+      tags:
+      - Consents
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/X-Request-ID'
+      - $ref: '#/components/parameters/TPP-Redirect-URI'
+      - $ref: '#/components/parameters/PSU-IP-Address_mandatory'
+      requestBody:
+        $ref: '#/components/requestBodies/accountAccessConsent'
+      responses:
+        '201':
+          $ref: '#/components/responses/CREATED_201_AccountAccessConsent'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/consents/account-access/{consentId}:
+    get:
+      summary: Get Account Access consent request
+      description: |
+        Returns the content of a consent object of category account-access. This is returning the data for the API
+        Client especially in cases, where the consent was directly managed between ASPSP and PSU e.g. in a redirect
+        SCA Approach.
+      operationId: getAccountAccessConsentInformation
+      tags:
+      - Consents
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/consentId_PATH'
+      - $ref: '#/components/parameters/X-Request-ID'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_AccountAccessConsentInformation'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/consents/{consent-category}/{consentId}/status:
+    get:
+      summary: Consent status request
+      description: Retrieves the status of an addressed consent resource.
+      operationId: getConsentStatus
+      tags:
+      - Consents
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/consentId_PATH'
+      - $ref: '#/components/parameters/consentCategory'
+      - $ref: '#/components/parameters/X-Request-ID'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_ConsentStatus'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/consents/{consent-category}/{consentId}:
+    delete:
+      summary: Delete consent
+      description: Terminates a given consent.
+      operationId: deleteConsent
+      tags:
+      - Consents
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/consentCategory'
+      - $ref: '#/components/parameters/consentId_PATH'
+      - $ref: '#/components/parameters/X-Request-ID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NO_CONTENT_204_Consents'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/accounts:
+    get:
+      summary: Read account list
+      description: |
+        Reads a list of current accounts, with balances where required. It is assumed that a consent of the PSU to this
+        access is already given and stored on the ASPSP system. The addressed list of accounts depends then on the PSU
+        ID and the stored consent addressed by consentId, respectively the OAuth2 access token.
+
+        **NOTE:** If the consent is granted only to show the list of addressable accounts, much less details are
+        displayed about the accounts. Specifically hyperlinks to balances or transaction endpoint should not be
+        delivered then.
+
+        **NOTE:** If the details returned in this call with the access rights "accountDetails", "balances",
+        "transactions" or "ais" are not sufficient, then more details can be retrieved by addressing the
+        /accounts/{account-id} endpoint.
+      operationId: getAccountList
+      tags:
+      - Accounts
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/withBalanceQuery'
+      - $ref: '#/components/parameters/X-Request-ID'
+      - $ref: '#/components/parameters/consentId_HEADER_mandatory'
+      - $ref: '#/components/parameters/PSU-IP-Address_conditionalForAis'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_AccountList'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/accounts/{account-id}:
+    get:
+      summary: Read account details
+      description: |
+        Reads details about an account, with balances where required.
+        It is assumed that a consent of the PSU to
+        this access is already given and stored on the ASPSP system.
+        The addressed details of this account depends then on the stored consent addressed by consentId,
+        respectively the OAuth2 access token.
+
+        Remark: This account-id can be a tokenised identification due to data protection reason since the path
+        information might be logged on intermediary servers within the ASPSP sphere. This account-id then can
+        be retrieved by the "GET Account List" call.
+
+        **NOTE:** The account-id can represent a multicurrency account.
+        In this case the currency code is set to "XXX".
+
+        Give detailed information about the addressed account.
+
+        Give detailed information about the addressed account together with balance information
+      operationId: readAccountDetails
+      tags:
+      - Accounts
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/accountId'
+      - $ref: '#/components/parameters/withBalanceQuery'
+      - $ref: '#/components/parameters/X-Request-ID'
+      - $ref: '#/components/parameters/consentId_HEADER_mandatory'
+      - $ref: '#/components/parameters/PSU-IP-Address_conditionalForAis'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_AccountDetails'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/accounts/{account-id}/balances:
+    get:
+      summary: Read balance
+      description: |
+        Reads account data from a given account addressed by "account-id".
+
+        **Remark:** This account-id can be a tokenised identification due to data protection reason since the path
+        information might be logged on intermediary servers within the ASPSP sphere.
+        This account-id then can be retrieved by the "Get account list" call.
+
+        The account-id is constant at least throughout the lifecycle of a given consent.
+      operationId: getBalances
+      tags:
+      - Accounts
+      security:
+      - {}
+      - BearerAuthOAuth: []
+      parameters:
+      - $ref: '#/components/parameters/accountId'
+      - $ref: '#/components/parameters/X-Request-ID'
+      - $ref: '#/components/parameters/consentId_HEADER_mandatory'
+      - $ref: '#/components/parameters/PSU-IP-Address_conditionalForAis'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_Balances'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_AIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_AIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_AIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_AIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_AIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_AIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_AIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_AIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_AIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_AIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+components:
+  schemas:
+    Error400_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 400 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode400_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode400_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error400_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 400.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage400_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error401_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 401 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode401_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode401_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error401_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 401.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage401_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error403_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 403 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode403_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode403_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error403_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 403.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage403_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error404_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 404 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode404_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode404_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error404_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 404.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage404_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error405_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 405 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode405_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode405_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error405_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 401.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage405_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error406_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 406 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode406_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode406_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error406_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 406.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage406_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error409_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 409 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode409_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode409_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error409_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 409.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage409_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+      example:
+      - category: ERROR
+        code: STATUS_INVALID
+        text: additional text information of the ASPSP up to 500 characters
+    Error429_AIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 429 for AIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode429_AIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: |
+              This is a data element to support the declaration of additional errors in the context of [RFC7807]
+              in case of a HTTP error code 429 for.
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode429_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error429_NG_AIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 429.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage429_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+      example:
+      - category: ERROR
+        code: ACCESS_EXCEEDED
+        text: additional text information of the ASPSP up to 500 characters
+    MessageCode400_AIS:
+      description: Message codes defined for AIS for HTTP Error code 400 (BAD_REQUEST).
+      type: string
+      enum:
+      - FORMAT_ERROR
+      - PARAMETER_NOT_CONSISTENT
+      - PARAMETER_NOT_SUPPORTED
+      - SERVICE_INVALID
+      - CONSENT_UNKNOWN
+      - RESOURCE_UNKNOWN
+      - RESOURCE_EXPIRED
+      - RESOURCE_BLOCKED
+      - TIMESTAMP_INVALID
+      - PERIOD_INVALID
+      - SCA_METHOD_UNKNOWN
+      - SCA_INVALID
+      - CONSENT_TYPE_NOT_SUPPORTED
+      - SESSIONS_NOT_SUPPORTED
+    MessageCode401_AIS:
+      description: Message codes defined for AIS for HTTP Error code 401 (UNAUTHORIZED).
+      type: string
+      enum:
+      - CERTIFICATE_INVALID
+      - ROLE_INVALID
+      - CERTIFICATE_EXPIRED
+      - CERTIFICATE_BLOCKED
+      - CERTIFICATE_REVOKED
+      - CERTIFICATE_MISSING
+      - SIGNATURE_INVALID
+      - SIGNATURE_MISSING
+      - PSU_CREDENTIALS_INVALID
+      - CORPORATE_ID_INVALID
+      - CONSENT_INVALID
+      - CONSENT_EXPIRED
+      - TOKEN_UNKNOWN
+      - TOKEN_INVALID
+      - TOKEN_EXPIRED
+    MessageCode403_AIS:
+      description: Message codes defined for AIS for HTTP Error code 403 (FORBIDDEN).
+      type: string
+      enum:
+      - SERVICE_BLOCKED
+      - CONSENT_UNKNOWN
+      - RESOURCE_UNKNOWN
+      - RESOURCE_EXPIRED
+    MessageCode404_AIS:
+      description: Message codes defined for AIS for HTTP Error code 404 (NOT FOUND).
+      type: string
+      enum:
+      - RESOURCE_UNKNOWN
+    MessageCode405_AIS:
+      description: Message codes defined for AIS for HTTP Error code 405 (METHOD NOT ALLOWED).
+      type: string
+      enum:
+      - SERVICE_INVALID
+    MessageCode406_AIS:
+      description: Message codes defined for AIS for HTTP Error code 406 (NOT ACCEPTABLE).
+      type: string
+      enum:
+      - REQUESTED_FORMATS_INVALID
+    MessageCode409_AIS:
+      description: Message codes defined for AIS for HTTP Error code 409 (CONFLICT).
+      type: string
+      enum:
+      - STATUS_INVALID
+    MessageCode429_AIS:
+      description: Message codes for HTTP Error code 429 (TOO MANY REQUESTS).
+      type: string
+      enum:
+      - ACCESS_EXCEEDED
+    accessRightsCodes:
+      description: |
+        The current list of access right codes. This might be further extended.
+      type: string
+      enum:
+      - ais
+      - accountDetails
+      - balances
+      - transactions
+      - orders
+      - ownerName
+      - psuName
+      - psuLeanIdentification
+      - trustedBeneficiaries
+      - initiatePayments
+      - fundsConfirmations
+      - userParameters
+      - ibanChecks
+      - corporateParameters
+      - accountCheckParameters
+    accountAccess:
+      description: |
+        Requested access services for a consent.
+      type: object
+      properties:
+        payments:
+          description: |
+            Addressing required access rights to current accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRights'
+        cards:
+          description: |
+            Addressing required access rights to card accounts. The accounts can be card reconciliation accounts
+            as well as single credit cards, dependent of the AIS offer of the ASPSP.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRights'
+        savings:
+          description: |
+            Addressing required access rights to saving accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRights'
+        loans:
+          description: |
+            Addressing required access rights to loan accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRights'
+        securities:
+          description: |
+            Addressing required access rights to security accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRights'
+    accountAccessConsent:
+      description: |
+        Content of the body of an Account Access consent establishing request.
+      type: object
+      required:
+      - access
+      - consentType
+      - recurringIndicator
+      - validTo
+      - frequencyPerDay
+      properties:
+        access:
+          $ref: '#/components/schemas/accountAccess'
+        consentType:
+          $ref: '#/components/schemas/consentTypeCode'
+        recurringIndicator:
+          $ref: '#/components/schemas/recurringIndicator'
+        validTo:
+          $ref: '#/components/schemas/validTo'
+        frequencyPerDay:
+          $ref: '#/components/schemas/frequencyPerDay'
+    accountAccessConsentInformationResponse-200_json:
+      description: Body of the JSON response for a successful get consent request.
+      type: object
+      required:
+      - access
+      - consentType
+      - recurringIndicator
+      - validTo
+      - frequencyPerDay
+      - consentStatus
+      properties:
+        access:
+          $ref: '#/components/schemas/accountAccessExtended'
+        consentType:
+          $ref: '#/components/schemas/consentTypeCode'
+        recurringIndicator:
+          $ref: '#/components/schemas/recurringIndicator'
+        validTo:
+          $ref: '#/components/schemas/validTo'
+        frequencyPerDay:
+          $ref: '#/components/schemas/frequencyPerDay'
+        consentStatus:
+          $ref: '#/components/schemas/consentStatus'
+        _links:
+          $ref: '#/components/schemas/linksGetConsent'
+    accountAccessConsentResponse-201:
+      description: Body of the JSON response for a successful consent request.
+      type: object
+      required:
+      - consentStatus
+      - consentId
+      - _links
+      properties:
+        consentStatus:
+          $ref: '#/components/schemas/consentStatus'
+        consentId:
+          $ref: '#/components/schemas/consentId'
+        scaMethods:
+          $ref: '#/components/schemas/scaMethods'
+        chosenScaMethod:
+          $ref: '#/components/schemas/chosenScaMethod'
+        challengeData:
+          $ref: '#/components/schemas/challenge'
+        _links:
+          $ref: '#/components/schemas/linksConsents'
+        psuMessage:
+          $ref: '#/components/schemas/psuMessageText'
+        apiClientMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessageInformation'
+    accountAccessExtended:
+      description: |
+        Requested access services for a consent.
+      type: object
+      properties:
+        payments:
+          description: |
+            Addressing required access rights to current accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRightsExtended'
+        cards:
+          description: |
+            Addressing required access rights to card accounts. The accounts can be card reconciliation accounts
+            as well as single credit cards, dependent of the AIS offer of the ASPSP.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRightsExtended'
+        savings:
+          description: |
+            Addressing required access rights to saving accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRightsExtended'
+        loans:
+          description: |
+            Addressing required access rights to loan accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRightsExtended'
+        securities:
+          description: |
+            Addressing required access rights to security accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountAccessRightsExtended'
+    accountAccessRights:
+      description: |
+        The account access rights as posted by the API Client.
+      type: object
+      required:
+      - rights
+      properties:
+        account:
+          $ref: '#/components/schemas/accountReference'
+        rights:
+          description: |
+            Addressing required access rights to current accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accessRightsCodes'
+    accountAccessRightsExtended:
+      description: |
+        The account access rights as posted by the API Client.
+      type: object
+      required:
+      - rights
+      properties:
+        account:
+          $ref: '#/components/schemas/accountReference'
+        rights:
+          description: |
+            Addressing required access rights to current accounts.
+            The array may not be empty.
+          type: array
+          items:
+            $ref: '#/components/schemas/accessRightsCodes'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    accountDetails:
+      description: |
+        The ASPSP shall give at least one of the account reference identifiers:
+          - iban
+          - bban
+          - msisdn
+          - ownerName
+          - ownerNames
+          - name
+          - displayName
+          - bic
+        If the account is a multicurrency account currency code in "currency" is set to "XXX".
+      type: object
+      required:
+      - resourceId
+      - currency
+      properties:
+        resourceId:
+          description: This is the data element to be used in the path when retrieving data from a dedicated account.
+            This shall be filled, if an addressable resource is created by the ASPSP on the /accounts endpoint..
+          type: string
+        iban:
+          $ref: '#/components/schemas/iban'
+        bban:
+          $ref: '#/components/schemas/bban'
+        msisdn:
+          $ref: '#/components/schemas/msisdn'
+        currency:
+          $ref: '#/components/schemas/currencyCode'
+        ownerName:
+          $ref: '#/components/schemas/ownerName'
+        ownerNames:
+          description: |
+            List of owner names.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountOwner'
+        name:
+          $ref: '#/components/schemas/name'
+        displayName:
+          $ref: '#/components/schemas/displayName'
+        product:
+          description: Product name of the bank for this account, proprietary definition.
+          type: string
+          maxLength: 35
+        cashAccountType:
+          $ref: '#/components/schemas/cashAccountType'
+        status:
+          $ref: '#/components/schemas/accountStatus'
+        bic:
+          $ref: '#/components/schemas/bicfi'
+        linkedAccounts:
+          description: This data attribute is a field, where an ASPSP can name a cash account associated to pending
+            card transactions.
+          type: string
+          maxLength: 70
+        usage:
+          $ref: '#/components/schemas/usage'
+        details:
+          description: |
+            Specifications that might be provided by the ASPSP:
+              - characteristics of the account
+              - characteristics of the relevant card
+          type: string
+          maxLength: 500
+        balances:
+          $ref: '#/components/schemas/balanceList'
+        _links:
+          $ref: '#/components/schemas/linksAccountDetails'
+    accountId:
+      description: This identification is denoting the addressed account, where the transaction has been performed.
+      type: string
+      example: qwer3456tzui7890
+    accountIdentificationCode:
+      description: |
+        Specifies the external account identification scheme name code(ExternalAccountIdentification1Code).
+      type: string
+      enum:
+      - AIIN
+      - BBAN
+      - CUID
+      - UPIC
+    accountList:
+      description: |
+        List of accounts with details.
+      type: object
+      required:
+      - accounts
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/accountDetails'
+    accountOwner:
+      description: |
+        Identifies a Person that acts as an account owner
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          description: Account owner name
+          type: string
+          maxLength: 70
+        role:
+          description: |
+            The following proprietary codes are used:
+              * "owner",
+              * "legalRepresentative",
+              * "authorisedUser"
+          type: string
+          maxLength: 35
+    accountReference:
+      description: |
+        This type is containing any account identification which can be used on payload-level to address specific
+        accounts. The ASPSP will document which account reference type it will support. Exactly one of the attributes
+        defined as "conditional" shall be used.
+        Remark: The currency of the account is needed, where the currency is an account characteristic identifying
+        certain sub-accounts under one external identifier like an IBAN. These sub-accounts are separated accounts
+        from a legal point of view and have separated balances, transactions etc.
+      type: object
+      properties:
+        iban:
+          $ref: '#/components/schemas/iban'
+        bban:
+          $ref: '#/components/schemas/bban'
+        pan:
+          $ref: '#/components/schemas/pan'
+        maskedPan:
+          $ref: '#/components/schemas/maskedPan'
+        msisdn:
+          $ref: '#/components/schemas/msisdn'
+        other:
+          $ref: '#/components/schemas/genericAccountIdentification'
+        typeCode:
+          $ref: '#/components/schemas/cashAccountType'
+        typeProprietary:
+          type: string
+          maxLength: 35
+        currency:
+          $ref: '#/components/schemas/currencyCode'
+        proxy:
+          $ref: '#/components/schemas/proxyAccountIdentification'
+    accountStatus:
+      description: |
+        Account status. The value is one of the following:
+          - "enabled": account is available
+          - "deleted": account is terminated
+          - "blocked": account is blocked e.g. for legal reasons
+        If this field is not used, than the account is available in the sense of this specification.
+      type: string
+      enum:
+      - enabled
+      - deleted
+      - blocked
+    amount:
+      type: object
+      required:
+      - currency
+      - amount
+      properties:
+        currency:
+          $ref: '#/components/schemas/currencyCode'
+        amount:
+          description: |
+            The amount given with fractional digits, where fractions must be compliant to the currency definition. Up
+            to 14 significant figures. Negative amounts are signed by minus.
+            The decimal separator is a dot.
+          type: string
+    authenticationMethodId:
+      description: |
+        The authentication method ID as provided by the ASPSP.
+      type: string
+      maxLength: 35
+      example: myAuthenticationID
+    authenticationObject:
+      description: |
+        Authentication object.
+      type: object
+      required:
+      - authenticationType
+      - authenticationMethodId
+      - name
+      properties:
+        authenticationType:
+          $ref: '#/components/schemas/authenticationType'
+        authenticationVersion:
+          description: |
+            Depending on the "authenticationType".
+            This version can be used by differentiating authentication tools used within performing OTP generation in
+            the same authentication type. This version can be referred to in the ASPSP?s documentation.
+          type: string
+        authenticationMethodId:
+          $ref: '#/components/schemas/authenticationMethodId'
+        name:
+          description: |
+            This is the name of the authentication method defined by the PSU in the Online Banking frontend of the
+            ASPSP. Alternatively this could be a description provided by the ASPSP like
+            "SMS OTP on phone +49160 xxxxx 28". This name shall be used by the TPP when presenting a list of
+            authentication methods to the PSU, if available.
+          type: string
+          example: SMS OTP on phone +49160 xxxxx 28
+        explanation:
+          description: |
+            Detailed information about the SCA method for the PSU.
+          type: string
+          example: Detailed information about the SCA method for the PSU.
+    authenticationType:
+      description: |
+        Type of the authentication method.
+
+        More authentication types might be added during implementation projects and documented in the ASPSP
+        documentation.
+          - 'SMS_OTP': An SCA method, where an OTP linked to the transaction to be authorised is sent to the PSU through
+            a SMS channel.
+          - 'CHIP_OTP': An SCA method, where an OTP is generated by a chip card, e.g. a TOP derived from an
+            EMV cryptogram. To contact the card, the PSU normally needs a (handheld) device.
+            With this device, the PSU either reads the challenging data through a visual interface like flickering or
+            the PSU types in the challenge through the device key pad.
+            The device then derives an OTP from the challenge data and displays the OTP to the PSU.
+          - 'PHOTO_OTP': An SCA method, where the challenge is a QR code or similar encoded visual data
+            which can be read in by a consumer device or specific mobile app.
+            The device resp. the specific app than derives an OTP from the visual challenge data and displays
+            the OTP to the PSU.
+          - 'PUSH_OTP': An OTP is pushed to a dedicated authentication APP and displayed to the PSU.
+          - 'SMTP_OTP': An OTP is sent via email to the PSU.
+      type: string
+      enum:
+      - SMS_OTP
+      - CHIP_OTP
+      - PHOTO_OTP
+      - PUSH_OTP
+      - SMTP_OTP
+    balance:
+      description: |
+        A single balance element.
+      type: object
+      required:
+      - balanceAmount
+      - balanceType
+      properties:
+        balanceAmount:
+          $ref: '#/components/schemas/amount'
+        balanceType:
+          $ref: '#/components/schemas/balanceType'
+        creditLimitIncluded:
+          description: |
+            A flag indicating if the credit limit of the corresponding account
+            is included in the calculation of the balance, where applicable.
+          type: boolean
+          example: false
+        lastChangeDateTime:
+          description: |
+            This data element might be used to indicate e.g. with the expected or booked balance that no action is known
+            on the account, which is not yet booked.
+          type: string
+          format: date-time
+        referenceDate:
+          description: Indicates the date of the balance.
+          type: string
+          format: date
+        lastCommittedTransaction:
+          description: |
+            "entryReference" of the last committed transaction to support the TPP in identifying whether all
+            PSU transactions are already known.
+          type: string
+          maxLength: 35
+    balanceList:
+      description: |
+        A list of balances regarding this account, e.g. the current balance, the last booked balance.
+        The list might be restricted to the current balance.
+      type: array
+      items:
+        $ref: '#/components/schemas/balance'
+    balanceType:
+      description: |
+        The following balance types are defined:
+          - "closingBooked":
+            Balance of the account at the end of the pre-agreed account reporting period.
+            It is the sum of the opening booked balance at the beginning of the period and all entries booked
+            to the account during the pre-agreed account reporting period.
+
+            For card-accounts, this is composed of
+
+              - invoiced, but not yet paid entries
+
+          - "expected":
+            Balance composed of booked entries and pending items known at the time of calculation,
+            which projects the end of day balance if everything is booked on the account and no other entry is posted.
+
+            For card accounts, this is composed of:
+              - invoiced, but not yet paid entries
+              - not yet invoiced but already booked entries and
+              - pending items (not yet booked)
+
+            For card-accounts:
+
+            "money to spend with the value of a pre-approved credit limit on the card account"
+
+          - "openingBooked":
+            Book balance of the account at the beginning of the account reporting period.
+            It always equals the closing book balance from the previous report.
+          - "interimAvailable":
+            Available balance calculated in the course of the account ?servicer?s business day,
+            at the time specified, and subject to further changes during the business day.
+            The interim balance is calculated on the basis of booked credit and debit items during the calculation
+            time/period specified.
+
+            For card-accounts, this is composed of:
+              - invoiced, but not yet paid entries
+              - not yet invoiced but already booked entries
+          - "interimBooked":
+            Balance calculated in the course of the account servicer's business day, at the time specified,
+            and subject to further changes during the business day.
+            The interim balance is calculated on the basis of booked credit and debit items during the calculation
+            time/period specified.
+          - "forwardAvailable":
+            Forward available balance of money that is at the disposal of the account owner on the date specified.
+          - "nonInvoiced":
+            Only for card accounts, to be checked yet.
+      type: string
+      enum:
+      - closingBooked
+      - expected
+      - openingBooked
+      - interimAvailable
+      - interimBooked
+      - forwardAvailable
+      - nonInvoiced
+    bban:
+      description: |
+        Basic Bank Account Number (BBAN) Identifier.
+
+        This data element can be used in the body of the consent request.
+          Message for retrieving account access consent from this account. This
+          data elements is used for payment accounts which have no IBAN.
+          ISO20022: Basic Bank Account Number (BBAN).
+
+          Identifier used nationally by financial institutions, i.e., in individual countries,
+          generally as part of a National Account Numbering Scheme(s),
+          which uniquely identifies the account of a customer.
+      type: string
+      pattern: '[a-zA-Z0-9]{1,30}'
+      example: BARC12345612345678
+    bicfi:
+      description: BICFI
+      type: string
+      pattern: '[A-Z]{6,6}[A-Z2-9][A-NP-Z0-9]([A-Z0-9]{3,3}){0,1}'
+      example: AAAADEBBXXX
+    cashAccountType:
+      description: |
+        ExternalCashAccountType1Code from ISO 20022.
+      type: string
+      enum:
+      - CACC
+      - CARD
+      - CASH
+      - CHAR
+      - CISH
+      - COMM
+      - CPAC
+      - LLSV
+      - LOAN
+      - MGLD
+      - MOMA
+      - NREX
+      - ODFT
+      - ONDP
+      - OTHR
+      - SACC
+      - SLRY
+      - SVGS
+      - TAXE
+      - TRAN
+      - TRAS
+      - VACC
+      - NFCA
+    challenge:
+      description: |
+        It is contained in addition to the data element 'chosenScaMethod' if challenge data is needed for SCA.
+        In rare cases this attribute is also used in the context of th "updatePsuAuthentication" or
+        "updateEncryptedPsuAuthentication" link.
+      type: object
+      properties:
+        image:
+          description: |
+            PNG data (max. 512 kilobyte) to be displayed to the PSU,
+            Base64 encoding, cp. [RFC4648].
+            This attribute is used only, when PHOTO_OTP or CHIP_OTP
+            is the selected SCA method.
+          type: string
+          format: byte
+        data:
+          description: A collection of challenge data.
+          type: array
+          items:
+            type: string
+        imageLink:
+          description: A link where the ASPSP will provide the challenge image for the TPP.
+          type: string
+          format: url
+        otpMaxLength:
+          description: The maximal length for the OTP to be typed in by the PSU.
+          type: integer
+        otpFormat:
+          description: The format type of the OTP to be typed in. The admitted values are "characters" or "integer".
+          type: string
+          enum:
+          - characters
+          - integer
+        additionalInformation:
+          description: |
+            Additional explanation for the PSU to explain
+            e.g. fallback mechanism for the chosen SCA method.
+            The TPP is obliged to show this to the PSU.
+          type: string
+    chosenScaMethod:
+      $ref: '#/components/schemas/authenticationObject'
+    clientErrorDetail:
+      description: |
+        Detailed human-readable text specific to this instance of the error.
+        XPath might be used to point to the issue generating the error in addition.
+        Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+      type: string
+      maxLength: 500
+    clientErrorTitle:
+      description: |
+        Short human-readable description of error type.
+        Could be in local language.
+        To be provided by ASPSPs.
+      type: string
+      maxLength: 70
+    clientMessage400_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode400_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage401_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode401_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage403_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode403_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage404_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode404_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage405_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode405_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage406_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode406_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage409_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode409_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage429_AIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode429_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessageCategory:
+      description: Only "ERROR" or "WARNING" permitted.
+      type: string
+      enum:
+      - ERROR
+      - WARNING
+    clientMessageInformation:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/messageCode'
+        path:
+          description: |
+            Path of the element of the request message which provoked the error message, if applicable
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessageText:
+      description: Additional explaining text.
+      type: string
+      maxLength: 500
+    consentId:
+      description: |
+        ID of the corresponding consent object as returned by an account information consent request.
+      type: string
+    consentStatus:
+      description: |
+        This is the overall lifecycle status of the consent.
+
+        Valid values are:
+          - 'received': The consent data have been received and are technically correct. The data is not authorised yet.
+          - 'rejected': The consent data have been rejected e.g. since no successful authorisation has taken place.
+          - 'partiallyAuthorised': The consent is due to a multi-level authorisation, some but not all mandated
+            authorisations have been performed yet.
+          - 'valid': The consent is accepted and valid for GET account data calls and others as specified in the
+            consent object.
+          - 'revokedByPsu': The consent has been revoked by the PSU towards the ASPSP.
+          - 'expired': The consent expired.
+          - 'terminatedByTpp': The corresponding TPP has terminated the consent by applying the DELETE method to the
+            consent resource.
+          - 'replacedByTpp': The corresponding TPP has terminated the (recurring) consent implicitly by submitting a
+            new (recurring) consent.
+        The ASPSP might add further codes. These codes then shall be contained in the ASPSP's documentation of the XS2A
+        interface and has to be added to this API definition as well.
+      type: string
+      enum:
+      - received
+      - rejected
+      - partiallyAuthorised
+      - valid
+      - revokedByPsu
+      - expired
+      - terminatedByTpp
+      - replacedByTpp
+    consentStatusResponse-200:
+      description: Body of the JSON response for a successful get status request for a consent.
+      type: object
+      required:
+      - consentStatus
+      properties:
+        consentStatus:
+          $ref: '#/components/schemas/consentStatus'
+        psuMessage:
+          $ref: '#/components/schemas/psuMessageText'
+    consentTypeCode:
+      description: |
+        Consent type. The value is one of the following:
+          - 'global': This consent type asks certain rights for dedicated account types without further detailing the
+            accounts.
+          - 'detailed': This consent type asks for access for dedicated accounts and dedicated rights.
+          - 'aspspManaged': This consent type asks for access on certain account types for dedicated access rights.
+             The accounts provisioned will be added during the authorisation process by the ASPSP.
+          - 'accountList': This consent type asks for the list of accounts for each addressed account type.
+            In difference to other account information consents, this consent might be authorised by using one
+            authentication factor only, if supported by the ASPSP.
+            In addition to the "accountDetails" access rights, also other non- transactional access rights might be
+            asked for. This might have an impact on the decision of the ASPSP to apply SCA or only one authentication
+            factor of the PSU.
+      type: string
+      enum:
+      - global
+      - detailed
+      - aspspManaged
+      - accountList
+    currencyCode:
+      description: |
+        ISO 4217 Alpha 3 currency code.
+      type: string
+      pattern: '[A-Z]{3}'
+      example: EUR
+    displayName:
+      description: |
+        Name of the account as defined by the PSU within online channels.
+      type: string
+      maxLength: 70
+    frequencyPerDay:
+      description: |
+        This field indicates the requested maximum frequency for an access without PSU involvement per day.
+        For a one-off access, this attribute is set to "1".
+
+        The frequency needs to be greater equal to one.
+
+        If not otherwise agreed bilaterally between TPP and ASPSP, the frequency is less equal to 4.
+      type: integer
+      example: 4
+      minimum: 1
+      exclusiveMinimum: false
+    genericAccountIdentification:
+      type: object
+      required:
+      - identification
+      properties:
+        identification:
+          description: |
+            Unique and unambiguous identification of an account.
+          type: string
+          maxLength: 35
+        schemeNameCode:
+          $ref: '#/components/schemas/accountIdentificationCode'
+        schemeNameProprietary:
+          description: A scheme name defined in a proprietary way.
+          type: string
+          maxLength: 35
+        issuer:
+          description: Issuer of the identification.
+          type: string
+          maxLength: 35
+    hrefType:
+      description: Link to a resource.
+      type: object
+      required:
+      - href
+      properties:
+        href:
+          type: string
+          example: /v2/payments/sepa-credit-transfers/1234-wertiq-983
+    iban:
+      type: string
+      description: IBAN of an account.
+      pattern: '[A-Z]{2,2}[0-9]{2,2}[a-zA-Z0-9]{1,30}'
+      example: FR7612345987650123456789014
+    linksAccountDetails:
+      description: |
+        Links to the account, which can be directly used for retrieving account information from this dedicated account.
+        Links to "balances" and/or "transactions"
+        These links are only supported, when the corresponding consent has been already granted.
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/hrefType'
+      properties:
+        balances:
+          $ref: '#/components/schemas/hrefType'
+        transactions:
+          $ref: '#/components/schemas/hrefType'
+    linksAll:
+      description: |
+        A link object with all available link types.
+      type: object
+      properties:
+        scaRedirect:
+          $ref: '#/components/schemas/hrefType'
+        scaOAuth:
+          $ref: '#/components/schemas/hrefType'
+        confirmation:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisation:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithPsuIdentification:
+          $ref: '#/components/schemas/hrefType'
+        updatePsuIdentification:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithProprietaryData:
+          $ref: '#/components/schemas/hrefType'
+        updateProprietaryData:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        updatePsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithEncryptedPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        updateEncryptedPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithAuthenticationMethodSelection:
+          $ref: '#/components/schemas/hrefType'
+        selectAuthenticationMethod:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithTransactionAuthorisation:
+          $ref: '#/components/schemas/hrefType'
+        authoriseTransaction:
+          $ref: '#/components/schemas/hrefType'
+        self:
+          $ref: '#/components/schemas/hrefType'
+        status:
+          $ref: '#/components/schemas/hrefType'
+        transactionFees:
+          $ref: '#/components/schemas/hrefType'
+        scaStatus:
+          $ref: '#/components/schemas/hrefType'
+        account:
+          $ref: '#/components/schemas/hrefType'
+        savingsAccount:
+          $ref: '#/components/schemas/hrefType'
+        loanAccount:
+          $ref: '#/components/schemas/hrefType'
+        balances:
+          $ref: '#/components/schemas/hrefType'
+        transactions:
+          $ref: '#/components/schemas/hrefType'
+        transactionDetails:
+          $ref: '#/components/schemas/hrefType'
+        securitiesAccount:
+          $ref: '#/components/schemas/hrefType'
+        positions:
+          $ref: '#/components/schemas/hrefType'
+        orders:
+          $ref: '#/components/schemas/hrefType'
+        orderDetails:
+          $ref: '#/components/schemas/hrefType'
+        entryStatusRevoked:
+          $ref: '#/components/schemas/hrefType'
+        first:
+          $ref: '#/components/schemas/hrefType'
+        next:
+          $ref: '#/components/schemas/hrefType'
+        previous:
+          $ref: '#/components/schemas/hrefType'
+        last:
+          $ref: '#/components/schemas/hrefType'
+        download:
+          $ref: '#/components/schemas/hrefType'
+        paymentInitiation:
+          $ref: '#/components/schemas/hrefType'
+        confirmInitiation:
+          $ref: '#/components/schemas/hrefType'
+    linksConsents:
+      description: |
+        A list of hyperlinks to be recognised by the TPP.
+
+        Type of links admitted in this response (which might be extended by single ASPSPs as indicated in its XS2A
+        documentation):
+          * 'scaRedirect':
+            In case of an SCA Redirect Approach, the ASPSP is transmitting the link to which to redirect the
+            PSU browser.
+          * 'scaOAuth':
+            In case of an OAuth2 based Redirect Approach, the ASPSP is transmitting the link where the configuration
+            of the OAuth2 Server is defined.
+            The configuration follows the OAuth 2.0 Authorisation Server Metadata specification.
+        * 'confirmation':
+          Might be added by the ASPSP if either the "scaRedirect" or "scaOAuth" hyperlink is returned
+          in the same response message.
+          This hyperlink defines the URL to the resource which needs to be updated with
+            * a confirmation code as retrieved after the plain redirect authentication process with the ASPSP
+            authentication server or
+            * an access token as retrieved by submitting an  code after the integrated OAuth based authentication
+            process with the ASPSP authentication server.
+          * 'startAuthorisation':
+            In case, where an explicit start of the transaction authorisation is needed,
+            but no more data needs to be updated (no authentication method to be selected,
+            no PSU identification nor PSU authentication data to be uploaded).
+          * 'startAuthorisationWithPsuIdentification':
+            The link to the authorisation end-point, where the authorisation sub-resource has to be generated
+            while uploading the PSU identification data.
+          * 'startAuthorisationWithPsuAuthentication':
+            The link to the authorisation end-point, where the authorisation sub-resource has to be generated
+            while uploading the PSU authentication data.
+          * 'startAuthorisationWithEncryptedPsuAuthentication':
+            Same as startAuthorisactionWithPsuAuthentication where the authentication data need to be encrypted on
+            application layer in uploading.
+          * 'startAuthorisationWithAuthenticationMethodSelection':
+            The link to the authorisation end-point, where the authorisation sub-resource has to be generated
+            while selecting the authentication method. This link is contained under exactly the same conditions
+            as the data element 'scaMethods'
+          * 'startAuthorisationWithTransactionAuthorisation':
+            The link to the authorisation end-point, where the authorisation sub-resource has to be generated
+            while authorising the transaction e.g. by uploading an OTP received by SMS.
+          * 'self':
+            The link to the Establish Account Information Consent resource created by this request.
+            This link can be used to retrieve the resource data.
+          * 'status':
+            The link to retrieve the status of the account information consent.
+          * 'scaStatus': The link to retrieve the scaStatus of the corresponding authorisation sub-resource.
+            This link is only contained, if an authorisation sub-resource has been already created.
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/hrefType'
+      properties:
+        scaRedirect:
+          $ref: '#/components/schemas/hrefType'
+        scaOAuth:
+          $ref: '#/components/schemas/hrefType'
+        confirmation:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisation:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithPsuIdentification:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithEncryptedPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithAuthenticationMethodSelection:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithTransactionAuthorisation:
+          $ref: '#/components/schemas/hrefType'
+        self:
+          $ref: '#/components/schemas/hrefType'
+        status:
+          $ref: '#/components/schemas/hrefType'
+        scaStatus:
+          $ref: '#/components/schemas/hrefType'
+    linksGetConsent:
+      description: |
+        A list of hyperlinks to be recognised by the TPP.
+        Links of type "account" and/or "cardAccount", depending on the nature of the consent.
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/hrefType'
+      properties:
+        account:
+          $ref: '#/components/schemas/hrefType'
+        card-account:
+          $ref: '#/components/schemas/hrefType'
+    maskedPan:
+      description: |
+        Masked Primary Account Number.
+      type: string
+      maxLength: 35
+      example: 123456xxxxxx1234
+    messageCode:
+      description: Code of the TPP message category.
+      type: string
+    msisdn:
+      type: string
+      maxLength: 35
+      description: Mobile phone number.
+      example: +49 170 1234567
+    name:
+      description: |
+        Name of the account, as assigned by the ASPSP,
+        in agreement with the account owner in order to provide an additional means of identification of the account.
+      type: string
+      maxLength: 70
+    ownerName:
+      description: |
+        Name of the legal account owner.
+        If there is more than one owner, then e.g. two names might be noted here.
+        For a corporate account, the corporate name is used for this attribute.
+        Even if supported by the ASPSP, the provision of this field might depend on the fact whether an explicit consent
+        to this specific additional account information has been given by the PSU.
+      type: string
+      maxLength: 140
+      example: John Doe
+    pan:
+      description: |
+        Primary Account Number according to ISO/IEC 7812.
+      type: string
+      maxLength: 35
+      example: '5409050000000000'
+    proxyAccountIdentification:
+      type: object
+      required:
+      - identification
+      properties:
+        typeCode:
+          $ref: '#/components/schemas/proxyAccountTypeCode'
+        typeProprietary:
+          type: string
+          maxLength: 35
+        identification:
+          type: string
+          maxLength: 2048
+    proxyAccountTypeCode:
+      description: |
+        Specifies the external proxy account type code, as published in the proxy account type external code set.
+        (ExternalProxyAccountType1Code)
+      type: string
+      enum:
+      - TELE
+      - EMAL
+      - DNAM
+      - CINC
+      - COTX
+      - COID
+      - CUST
+      - DRLC
+      - EIDN
+      - EWAL
+      - PVTX
+      - LEIC
+      - MBNO
+      - NIDN
+      - CCPT
+      - SHID
+      - SOSE
+      - TOKN
+      - UBIL
+      - VIPN
+      - BIID
+    psuMessageText:
+      description: Text to be displayed to the PSU.
+      type: string
+      maxLength: 500
+    readAccountBalanceResponse-200:
+      description: Body of the response for a successful read balance for an account request.
+      type: object
+      required:
+      - account
+      - balances
+      properties:
+        account:
+          $ref: '#/components/schemas/accountReference'
+        balances:
+          $ref: '#/components/schemas/balanceList'
+    recurringIndicator:
+      description: |
+        "true", if the consent is for recurring access to the account data.
+        "false", if the consent is for one access to the account data.
+      type: boolean
+      example: false
+    scaMethods:
+      description: |
+        This data element might be contained, if SCA is required and if the PSU has a choice between different
+        authentication methods.
+
+        Depending on the risk management of the ASPSP this choice might be offered before or after the PSU
+        has been identified with the first relevant factor, or if an access token is transported.
+
+        If this data element is contained, then there is also a hyperlink of type
+        'startAuthorisationWithAuthenticationMethodSelection' contained in the response body.
+
+        These methods shall be presented towards the PSU for selection by the TPP.
+      type: array
+      items:
+        $ref: '#/components/schemas/authenticationObject'
+    usage:
+      description: |
+        Specifies the usage of the account:
+          * PRIV: private personal account
+          * ORGA: professional account
+      type: string
+      maxLength: 4
+      enum:
+      - PRIV
+      - ORGA
+    validTo:
+      description: |
+        This parameter is defining a valid until date (including the mentioned date) for the requested consent.
+        The content is the local ASPSP date in ISO-Date format, e.g. 2024-10-30.
+
+        Future dates might get adjusted by ASPSP.
+
+        If a maximal available date is requested, a date in far future is to be used: "9999-12-31".
+
+        In both cases the consent object to be retrieved by the get consent request will contain the adjusted date.
+
+        The support of this adaption of the maximum available date is mandatory for the ASPSP.
+      type: string
+      format: date
+      example: '2020-12-31'
+  parameters:
+    PSU-IP-Address_conditionalForAis:
+      name: PSU-IP-Address
+      in: header
+      description: |
+        The forwarded IP Address header field consists of the corresponding HTTP request
+        IP Address field between PSU and TPP.
+        It shall be contained if and only if this request was actively initiated by the PSU.
+      schema:
+        type: string
+        format: ipv4
+      required: false
+      example: 192.168.8.78
+    PSU-IP-Address_mandatory:
+      name: PSU-IP-Address
+      in: header
+      description: |
+        The forwarded IP Address header field consists of the corresponding http request IP Address field between
+        PSU and TPP. If not available, the TPP shall use the IP Address used by the TPP when submitting this request.
+      schema:
+        type: string
+        format: ipv4
+      required: true
+      example: 192.168.8.78
+    TPP-Redirect-URI:
+      name: TPP-Redirect-URI
+      in: header
+      description: |
+        URI of the TPP, where the transaction flow shall be redirected to after a Redirect.
+
+        Mandated for the Redirect SCA Approach, specifically
+        when TPP-Redirect-Preferred equals "true".
+        It is recommended to always use this header field.
+
+        **Remark for Future:**
+        This field might be changed to mandatory in the next version of the specification.
+      schema:
+        type: string
+        format: uri
+      required: false
+    X-Request-ID:
+      name: X-Request-ID
+      in: header
+      description: ID of the request, unique to the call, as determined by the initiating party.
+      required: true
+      example: 99391c7e-ad88-49ec-a2ad-99ddcb1f7721
+      schema:
+        type: string
+        format: uuid
+    accountId:
+      name: account-id
+      in: path
+      description: |
+        This identification is denoting the addressed (card) account.
+        The account-id is retrieved by using a "Read Account List" or "Read Card Account list" call.
+        The account-id is the "resourceId" attribute of the account structure.
+        Its value is constant at least throughout the lifecycle of a given consent.
+      required: true
+      schema:
+        $ref: '#/components/schemas/accountId'
+    consentCategory:
+      name: consent-category
+      in: path
+      description: |
+        Consent category:
+        - account-access: consent for AIS access to addressed accounts (Service Type CONS-AIS).
+        - user-parameters-access: consent for user data access for addressed accounts (Service Type CONS-USP).
+        - document-services: explicit consent to submit RTPs (service type CONS-RTP).
+        Possible values are:
+          * account-access
+          * user-parameters-access
+          * rtps
+      required: true
+      schema:
+        type: string
+        enum:
+        - account-access
+        - user-parameters-access
+        - document-services
+    consentId_HEADER_mandatory:
+      name: Consent-ID
+      in: header
+      description: |
+        This then contains the consentId of the related AIS consent, which was performed prior to this
+        payment initiation.
+      required: true
+      schema:
+        $ref: '#/components/schemas/consentId'
+    consentId_PATH:
+      name: consentId
+      in: path
+      description: |
+        ID of the corresponding consent object as returned by an account information consent request.
+      required: true
+      schema:
+        $ref: '#/components/schemas/consentId'
+    withBalanceQuery:
+      name: withBalance
+      in: query
+      description: |
+        If contained, this function reads the list of accessible payment accounts including the booking balance,
+        if granted by the PSU in the related consent and available by the ASPSP.
+        This parameter might be ignored by the ASPSP.
+      required: false
+      schema:
+        type: boolean
+  responses:
+    BAD_REQUEST_400_AIS:
+      description: Bad Request
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error400_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error400_AIS'
+    CONFLICT_409_AIS:
+      description: Conflict
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error409_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error409_AIS'
+    CREATED_201_AccountAccessConsent:
+      description: Created
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+        ASPSP-SCA-Approach:
+          $ref: '#/components/headers/ASPSP-SCA-Approach'
+        ASPSP-Multiple-Consent-Support:
+          $ref: '#/components/headers/ASPSP-Multiple-Consent-Support'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/accountAccessConsentResponse-201'
+    FORBIDDEN_403_AIS:
+      description: Forbidden
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error403_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error403_AIS'
+    INTERNAL_SERVER_ERROR_500_AIS:
+      description: Internal Server Error
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    METHOD_NOT_ALLOWED_405_AIS:
+      description: Method Not Allowed
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error405_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error405_AIS'
+    NOT_ACCEPTABLE_406_AIS:
+      description: Not Acceptable
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error406_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error406_AIS'
+    NOT_FOUND_404_AIS:
+      description: Not found
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error404_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error404_AIS'
+    NO_CONTENT_204_Consents:
+      description: No Content
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    OK_200_AccountAccessConsentInformation:
+      description: OK
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/accountAccessConsentInformationResponse-200_json'
+    OK_200_AccountDetails:
+      description: OK
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - account
+            properties:
+              account:
+                $ref: '#/components/schemas/accountDetails'
+    OK_200_AccountList:
+      description: OK. In case, no account is accessible, the ASPSP shall return an empty array. As this is also
+        considered a positive response, the Response code must still be 200.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/accountList'
+    OK_200_Balances:
+      description: OK
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/readAccountBalanceResponse-200'
+    OK_200_ConsentStatus:
+      description: OK
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/consentStatusResponse-200'
+    REQUEST_TIMEOUT_408_AIS:
+      description: Request Timeout
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    SERVICE_UNAVAILABLE_503_AIS:
+      description: Service Unavailable
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    TOO_MANY_REQUESTS_429_AIS:
+      description: Too Many Requests
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error429_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error429_AIS'
+    UNAUTHORIZED_401_AIS:
+      description: Unauthorized
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error401_NG_AIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error401_AIS'
+    UNSUPPORTED_MEDIA_TYPE_415_AIS:
+      description: Unsupported Media Type
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+  headers:
+    ASPSP-Multiple-Consent-Support:
+      description: |
+        true if the ASPSP supports the Multiple Consent Service.
+        false if the ASPSP does not support the Multiple Consent Service.
+        If not provided, this also implies that the ASPSP does not support the Multiple Consent Service.
+      schema:
+        type: boolean
+      required: false
+    ASPSP-SCA-Approach:
+      description: |
+        This data element must be contained, if the SCA Approach is already fixed.
+        Possible values are
+          * EMBEDDED
+          * DECOUPLED
+          * REDIRECT
+        The OAuth SCA approach will be subsumed by REDIRECT.
+      schema:
+        type: string
+        enum:
+        - EMBEDDED
+        - DECOUPLED
+        - REDIRECT
+        example: EMBEDDED
+      required: false
+    Location:
+      description: |
+        Location of the created resource.
+      schema:
+        type: string
+        format: url
+      required: true
+    X-Request-ID:
+      description: ID of the request, unique to the call, as determined by the initiating party.
+      required: true
+      example: 99391c7e-ad88-49ec-a2ad-99ddcb1f7721
+      schema:
+        type: string
+        format: uuid
+  requestBodies:
+    accountAccessConsent:
+      description: |
+        Request body for an Account Access consent establishing request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/accountAccessConsent'

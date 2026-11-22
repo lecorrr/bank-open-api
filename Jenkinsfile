@@ -1,5 +1,5 @@
 // CI for bank-open-api: compile, run every test, publish reports, build the image. With the k3d cluster
-// (DEPLOY_TO_K3D=true, see docs/cluster.md) it deploys the image and calls the API through Traefik.
+// (DEPLOY_TO_K3D=true, see docs/cluster.md) it deploys the image and takes a consent through the API via Traefik.
 pipeline {
     agent any
 
@@ -70,10 +70,7 @@ pipeline {
             steps {
                 // The way a provider comes in: k3d's load balancer, Traefik, the Gateway, the route. Jenkins is on
                 // k3d's Docker network, where the load balancer listens on port 80.
-                sh '''
-                    curl -fsS -w '\\n' -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)" \
-                        http://k3d-bank-serverlb/v2/accounts
-                '''
+                sh 'bash scripts/smoke-test.sh http://k3d-bank-serverlb'
             }
         }
     }

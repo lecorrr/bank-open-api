@@ -2,12 +2,13 @@ package dev.tkachuk.openbanking.bankcore;
 
 import dev.tkachuk.openbanking.common.web.RequestIdFilter;
 import java.io.IOException;
-import java.util.List;
+import java.util.Optional;
 import org.slf4j.MDC;
 import org.springframework.http.HttpRequest;
 import org.springframework.http.client.ClientHttpRequestExecution;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
@@ -28,17 +29,19 @@ public class BankCoreClient {
                 .build();
     }
 
-    public List<BankCoreAccount> listAccounts() {
-        BankCoreAccount[] accounts;
+    /** The account with this IBAN, or empty when bank-core has none. */
+    public Optional<BankCoreAccount> findAccount(String iban) {
         try {
-            accounts = restClient.get().uri("/api/v1/accounts").retrieve().body(BankCoreAccount[].class);
+            return Optional.ofNullable(
+                    restClient.get().uri("/api/v1/accounts/{iban}", iban).retrieve().body(BankCoreAccount.class));
+        } catch (HttpClientErrorException.NotFound e) {
+            return Optional.empty();
         } catch (RestClientResponseException e) {
             throw new BankCoreUnavailableException("bank-core answered " + e.getStatusCode().value(), e);
         } catch (RestClientException e) {
             throw new BankCoreUnavailableException(
                     "bank-core could not be reached (" + e.getClass().getSimpleName() + ")", e);
         }
-        return accounts == null ? List.of() : List.of(accounts);
     }
 
     private static ClientHttpResponse addRequestId(HttpRequest request, byte[] body,

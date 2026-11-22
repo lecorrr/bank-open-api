@@ -4,6 +4,14 @@ server:
 spring:
   application:
     name: bank-open-api
+  datasource:
+    # In the cluster the Helm chart sets all three; on this machine compose.yaml runs the database.
+    url: ${DB_URL:jdbc:postgresql://localhost:${OPENBANKING_DB_PORT:5437}/openbanking}
+    username: ${DB_USER:openbanking}
+    password: ${DB_PASSWORD:openbanking}
+  jackson:
+    # Leave out what is not set, as the contract's optional fields expect.
+    default-property-inclusion: non_null
   http:
     clients:
       # A slow bank-core must not hold a provider's request for long; the provider gets 503 and retries.
@@ -13,6 +21,9 @@ spring:
 bank-open-api:
   bank-core:
     url: ${BANK_CORE_URL:http://localhost:8080}
+  consents:
+    # The longest a consent may run; a later validTo, such as the contract's 9999-12-31, is cut back to it.
+    max-validity-days: 180
 
 management:
   endpoints:

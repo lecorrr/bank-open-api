@@ -7,26 +7,34 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
-import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import dev.tkachuk.openbanking.common.web.RequestIdFilter;
+import java.math.BigDecimal;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.MDC;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 class BankCoreClientTest {
 
-    private static final String ACCOUNTS_URL = "http://bank-core.test:8080/api/v1/accounts";
+    private static final String IBAN = "UA843999990000000000000000001";
+    private static final String ACCOUNT_URL = "http://bank-core.test:8080/api/v1/accounts/" + IBAN;
+    private static final String ACCOUNT_JSON = """
+            {"iban": "%s", "holderName": "Test Holder", "currency": "UAH", "balance": 850.00,
+             "createdAt": "2026-11-20T08:00:00Z"}
+            """.formatted(IBAN);
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
-    private static final String IBAN_A = "UA843999990000000000000000001";
-    private static final String IBAN_B = "UA033999990000000000000000004";
 
     // The server binds to the builder before the client builds its RestClient from it.
     private final RestClient.Builder builder = RestClient.builder();
@@ -40,63 +48,59 @@ class BankCoreClientTest {
     }
 
     @Test
-    void shouldReadAccountsAndSkipFieldsItDoesNotNeed() {
-        bankCore.expect(requestTo(ACCOUNTS_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess("""
-                        [{"iban": "%s", "holderName": "Test Holder", "currency": "UAH", "balance": 850.00,
-                          "createdAt": "2026-11-20T08:00:00Z"},
-                         {"iban": "%s", "holderName": "Test Holder", "currency": "USD", "balance": 10.00,
-                          "createdAt": "2026-11-20T08:00:01Z"}]
-                        """.formatted(IBAN_A, IBAN_B), MediaType.APPLICATION_JSON));
+    void shouldReadAccountAndSkipFieldsItDoesNotNeed() {
+        bankCore.expect(requestTo(ACCOUNT_URL)).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(ACCOUNT_JSON, MediaType.APPLICATION_JSON));
 
-        assertThat(client.listAccounts())
-                .containsExactly(new BankCoreAccount(IBAN_A, "UAH"), new BankCoreAccount(IBAN_B, "USD"));
+        assertThat(client.findAccount(IBAN)).contains(new BankCoreAccount(IBAN, "UAH", new BigDecimal("850.00")));
         bankCore.verify();
     }
 
     @Test
-    void shouldReadNoAccounts() {
-        bankCore.expect(requestTo(ACCOUNTS_URL)).andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    void shouldFindNothingWhenBankCoreHasNoSuchAccount() {
+        bankCore.expect(requestTo(ACCOUNT_URL)).andRespond(withStatus(HttpStatus.NOT_FOUND));
 
-        assertThat(client.listAccounts()).isEmpty();
+        assertThat(client.findAccount(IBAN)).isEmpty();
     }
 
     @Test
     void shouldPassTheProvidersRequestIdToBankCore() {
         MDC.put(RequestIdFilter.MDC_KEY, REQUEST_ID);
-        bankCore.expect(requestTo(ACCOUNTS_URL)).andExpect(header("X-Request-Id", REQUEST_ID))
-                .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+        bankCore.expect(requestTo(ACCOUNT_URL)).andExpect(header("X-Request-Id", REQUEST_ID))
+                .andRespond(withSuccess(ACCOUNT_JSON, MediaType.APPLICATION_JSON));
 
-        client.listAccounts();
+        client.findAccount(IBAN);
 
         bankCore.verify();
     }
 
     @Test
     void shouldSendNoRequestIdWhenThereIsNone() {
-        bankCore.expect(requestTo(ACCOUNTS_URL)).andExpect(headerDoesNotExist("X-Request-Id"))
-                .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+        bankCore.expect(requestTo(ACCOUNT_URL)).andExpect(headerDoesNotExist("X-Request-Id"))
+                .andRespond(withSuccess(ACCOUNT_JSON, MediaType.APPLICATION_JSON));
 
-        client.listAccounts();
+        client.findAccount(IBAN);
 
         bankCore.verify();
     }
 
-    @Test
-    void shouldReportErrorAnswerAsUnavailable() {
-        bankCore.expect(requestTo(ACCOUNTS_URL)).andRespond(withServerError());
+    // Any other refusal means the two services disagree, which the provider cannot fix by changing its request.
+    @ParameterizedTest
+    @ValueSource(ints = {400, 500, 503})
+    void shouldReportErrorAnswerAsUnavailable(int status) {
+        bankCore.expect(requestTo(ACCOUNT_URL)).andRespond(withStatus(HttpStatusCode.valueOf(status)));
 
-        assertThatThrownBy(client::listAccounts)
+        assertThatThrownBy(() -> client.findAccount(IBAN))
                 .isInstanceOf(BankCoreUnavailableException.class)
-                .hasMessage("bank-core answered 500");
+                .hasMessage("bank-core answered " + status);
     }
 
     @Test
     void shouldReportUnreachableBankCoreAsUnavailable() {
-        bankCore.expect(requestTo(ACCOUNTS_URL))
+        bankCore.expect(requestTo(ACCOUNT_URL))
                 .andRespond(withException(new SocketTimeoutException("Read timed out")));
 
-        assertThatThrownBy(client::listAccounts)
+        assertThatThrownBy(() -> client.findAccount(IBAN))
                 .isInstanceOf(BankCoreUnavailableException.class)
                 .hasMessage("bank-core could not be reached (ResourceAccessException)");
     }

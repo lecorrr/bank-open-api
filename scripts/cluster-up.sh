@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # cluster-up.sh: creates the k3d cluster "bank" and its platform: the bank namespace, the Gateway, PostgreSQL with
-# bank-core's database, and the account Jenkins deploys with. Safe to run again: it creates or fixes only what is
-# missing, and starts the cluster if it was stopped. The services themselves come from Jenkins (docs/cluster.md).
+# a database for bank-core and one for bank-open-api, and the account Jenkins deploys with. Safe to run again: it
+# creates or fixes only what is missing, and starts the cluster if it was stopped. The services themselves come
+# from Jenkins (docs/cluster.md).
 #
 #   bash scripts/cluster-up.sh --check   report, change nothing
 #   bash scripts/cluster-up.sh           create or fix what is missing
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.1.0"
+readonly PROJECT_VERSION="0.2.0"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"
@@ -24,7 +25,7 @@ for arg in "$@"; do
   case "$arg" in
     --check) mode="check" ;;
     -h | --help)
-      sed -n '2,8p' "$0"
+      sed -n '2,9p' "$0"
       exit 0
       ;;
     *)
@@ -232,6 +233,7 @@ ensure_secret() {
 step "secrets"
 ensure_secret postgres-admin password=random
 ensure_secret bank-core-db username=bank password=random
+ensure_secret bank-open-api-db username=openbanking password=random
 
 # --- PostgreSQL --------------------------------------------------------------------------------------------
 
@@ -281,6 +283,7 @@ SQL
 
 step "databases"
 ensure_database bank bank-core-db
+ensure_database openbanking bank-open-api-db
 
 # --- the account Jenkins deploys with ----------------------------------------------------------------------
 

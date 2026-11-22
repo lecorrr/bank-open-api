@@ -12,6 +12,11 @@ service:
 bankCore:
   url: http://bank-core:8080
 
+database:
+  url: jdbc:postgresql://postgres:5432/openbanking
+  # Secret with the keys username and password; scripts/cluster-up.sh creates it.
+  existingSecret: bank-open-api-db
+
 # The route from the bank's Gateway (made by scripts/cluster-up.sh) to this service.
 route:
   enabled: true

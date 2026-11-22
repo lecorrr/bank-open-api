@@ -35,6 +35,18 @@ spec:
           env:
             - name: BANK_CORE_URL
               value: {{ .Values.bankCore.url | quote }}
+            - name: DB_URL
+              value: {{ .Values.database.url | quote }}
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: password
             - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
               value: ecs
           # Up to two minutes to start; after that a hung JVM is restarted.

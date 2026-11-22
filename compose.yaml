@@ -1,0 +1,23 @@
+# PostgreSQL for running the service on this machine. The port is published on localhost only.
+name: bank-open-api
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: openbanking
+      POSTGRES_USER: openbanking
+      POSTGRES_PASSWORD: openbanking
+    ports:
+      # 5437 by default, next to bank-core's 5434 and bank-integration's 5435; the app reads OPENBANKING_DB_PORT.
+      - "127.0.0.1:${OPENBANKING_DB_PORT:-5437}:5432"
+    volumes:
+      - openbanking-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openbanking -d openbanking"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  openbanking-db:
