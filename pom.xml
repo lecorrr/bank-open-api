@@ -13,13 +13,13 @@
 
     <groupId>dev.tkachuk</groupId>
     <artifactId>bank-open-api</artifactId>
-    <version>0.2.0</version>
+    <version>0.2.1</version>
     <name>bank-open-api</name>
     <description>Open banking API of the bank for licensed providers, in front of bank-core</description>
 
     <properties>
         <java.version>21</java.version>
-        <openapi-generator.version>7.22.0</openapi-generator.version>
+        <openapi-generator.version>7.27.0</openapi-generator.version>
         <!-- The API contract; the interfaces and DTOs in dev.tkachuk.openbanking.api come from it. -->
         <api.contract>${project.basedir}/src/main/resources/static/openapi/bank-open-api.yaml</api.contract>
         <jacoco.version>0.8.13</jacoco.version>
@@ -156,6 +156,9 @@
                                 <openApiNullable>false</openApiNullable>
                                 <!-- Optional lists stay null, so they are left out of the JSON (non_null). -->
                                 <containerDefaultToNull>true</containerDefaultToNull>
+                                <!-- No per-field Jackson annotations: application.yml's non_null decides for all. -->
+                                <generateJsonIncludeAnnotations>false</generateJsonIncludeAnnotations>
+                                <generateJsonSetterNullsAnnotations>false</generateJsonSetterNullsAnnotations>
                                 <documentationProvider>none</documentationProvider>
                                 <annotationLibrary>none</annotationLibrary>
                                 <hideGenerationTimestamp>true</hideGenerationTimestamp>

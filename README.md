@@ -5,7 +5,7 @@ start payments, only with the customer's consent. It follows the Berlin Group Ne
 open banking specifications use, and sits in front of [bank-core](https://github.com/lecorrr/bank-core). Project 3
 of three, with bank-core and [bank-integration](https://github.com/lecorrr/bank-integration).
 
-**Status: 0.2.0, step 2 of 8: the contract and consents.** A provider asks for a consent to read named accounts,
+**Status: 0.2.1, step 2 of 8: the contract and consents.** A provider asks for a consent to read named accounts,
 reads its status, and deletes it. Account data comes only under a valid consent, and the customer's approval
 arrives in step 4: until then a new consent stays `received` and reads are refused (the tests approve consents in
 the database). There is no provider identity yet (step 3), so the cluster holds demo data only.
@@ -62,7 +62,7 @@ Start bank-core too (its README: `spring-boot:run` with the demo profile on port
 ./mvnw spring-boot:run
 ```
 
-The log shows the running version (`bank-open-api 0.2.0 started`). The API is on port 8090. Ask for a consent to
+The log shows the running version (`bank-open-api 0.2.1 started`). The API is on port 8090. Ask for a consent to
 the balances of bank-core's first demo account, and keep its id:
 
 ```

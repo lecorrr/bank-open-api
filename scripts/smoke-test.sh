@@ -8,7 +8,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="smoke-test.sh"
-readonly PROJECT_VERSION="0.2.0"
+readonly PROJECT_VERSION="0.2.1"
 readonly BASE_URL="${1:-http://localhost:8480}"
 # The first of bank-core's demo accounts.
 readonly IBAN="UA843999990000000000000000001"

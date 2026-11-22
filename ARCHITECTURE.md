@@ -1,6 +1,6 @@
 # Architecture
 
-Version 0.2.0, step 2 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.2.1, step 2 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. This version brings the contract as code and consents: a provider reads account data only under a
 valid consent that names the account and the data.
 
@@ -24,7 +24,7 @@ line in it, when an HTTP client appears outside `bankcore` or SQL outside `conse
 licence next to it) cut down to what this version offers: creating, reading and deleting an account access
 consent, and the account list, details and balances. The service serves it at `/openapi/bank-open-api.yaml`.
 
-openapi-generator 7.22.0 turns it into Spring interfaces and models at build time. The controllers implement the
+openapi-generator 7.27.0 turns it into Spring interfaces and models at build time. The controllers implement the
 interfaces, so a path, header or field that disagrees with the contract does not compile. The interfaces carry
 `@Validated`, so Spring checks the bean validation rules of the models (required fields, patterns, minimums) before
 a controller runs, and the error names the field.
