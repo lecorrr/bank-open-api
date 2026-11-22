@@ -1,0 +1,20 @@
+# Build output
+target/
+*.log
+logs/
+
+# Downloaded by mvnw
+.mvn/wrapper/maven-wrapper.jar
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Local secrets and overrides
+.env*
+*.local.yml
+*.kubeconfig

@@ -1,0 +1,16 @@
+# The bank's entry point. Traefik serves it: a listener's port must be one of Traefik's entry points, and 8000 is
+# "web", which k3d publishes on localhost:8480. Only routes in the bank namespace may attach.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: bank-gateway
+  namespace: bank
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: web
+      protocol: HTTP
+      port: 8000
+      allowedRoutes:
+        namespaces:
+          from: Same

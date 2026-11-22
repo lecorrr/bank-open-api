@@ -1,0 +1,28 @@
+# Values for the k3d cluster in cluster/. Jenkins sets image.tag to the commit it built.
+image:
+  repository: localhost:5050/bank-open-api
+  tag: ""   # empty: the chart's appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  port: 8090
+
+bankCore:
+  url: http://bank-core:8080
+
+# The route from the bank's Gateway (made by scripts/cluster-up.sh) to this service.
+route:
+  enabled: true
+  gateway: bank-gateway
+  listener: web
+  pathPrefix: /v2
+
+# The JVM takes 60 % of the limit for its heap (see the Dockerfile); the rest is metaspace and threads.
+resources:
+  requests:
+    cpu: 100m
+    memory: 384Mi
+  limits:
+    memory: 512Mi

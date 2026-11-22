@@ -1,0 +1,17 @@
+image:
+  repository: postgres
+  tag: 17-alpine   # the image of bank-core's compose.yaml
+
+# Secret with the key "password" for the postgres superuser; scripts/cluster-up.sh creates it.
+existingSecret: postgres-admin
+
+storage:
+  storageClassName: local-path   # k3s's local storage, a folder on the node
+  size: 2Gi
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

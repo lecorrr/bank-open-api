@@ -1,0 +1,11 @@
+# Everything of the bank runs here. Pods must meet the "restricted" Pod Security Standard: no root, no extra
+# capabilities, no privilege escalation, a seccomp profile.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bank
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36

@@ -1,0 +1,46 @@
+# The k3d cluster "bank": one k3s server in Docker with a local image registry. scripts/cluster-up.sh creates it;
+# delete it with: k3d cluster delete bank
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: bank
+servers: 1
+agents: 0
+image: rancher/k3s:v1.36.6-k3s1
+# The Kubernetes API on this machine only.
+kubeAPI:
+  hostIP: "127.0.0.1"
+  hostPort: "6550"
+ports:
+  # Traefik's entry points, through k3d's load balancer: HTTP now, HTTPS from the edge step on.
+  - port: 127.0.0.1:8480:80
+    nodeFilters:
+      - loadbalancer
+  - port: 127.0.0.1:8443:443
+    nodeFilters:
+      - loadbalancer
+registries:
+  # The registry container k3d-bank-registry; Jenkins pushes to localhost:5050 on this machine.
+  create:
+    host: "127.0.0.1"
+    hostPort: "5050"
+  # The nodes pull localhost:5050/... from that container, inside k3d's Docker network.
+  config: |
+    mirrors:
+      "localhost:5050":
+        endpoint:
+          - http://k3d-bank-registry:5000
+files:
+  # k3s deploys everything in its manifests folder at start: this switches on Traefik's Gateway API provider.
+  - source: traefik-config.yaml
+    destination: k3s-manifests-custom/traefik-config.yaml
+    nodeFilters:
+      - server:*
+options:
+  k3d:
+    wait: true
+    timeout: 300s
+  kubeconfig:
+    # kubectl then works with the cluster right away; the scripts still name its context, k3d-bank.
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

@@ -1,0 +1,44 @@
+server:
+  port: 8090   # bank-core has 8080 when both run on one machine
+
+spring:
+  application:
+    name: bank-open-api
+  http:
+    clients:
+      # A slow bank-core must not hold a provider's request for long; the provider gets 503 and retries.
+      connect-timeout: 2s
+      read-timeout: 5s
+
+bank-open-api:
+  bank-core:
+    url: ${BANK_CORE_URL:http://localhost:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true   # /actuator/health/liveness and /readiness for Kubernetes, also when run outside it
+  tracing:
+    sampling:
+      # Keep every trace. Nothing is exported yet; logs carry the trace ids either way.
+      probability: 1.0
+
+logging:
+  level:
+    dev.tkachuk.openbanking: INFO
+  pattern:
+    # trace and span id from tracing, the provider's X-Request-ID from RequestIdFilter, on every plain-text line
+    correlation: "[%X{traceId:-},%X{spanId:-}] [%X{requestId:-}] "
+  structured:
+    # For ECS JSON logs (LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs, set in the Helm chart): MDC keys to their ECS
+    # field names. The brackets keep the camel case of the keys.
+    json:
+      rename:
+        "[traceId]": trace.id
+        "[spanId]": span.id
+        "[requestId]": http.request.id

@@ -1,0 +1,14 @@
+# Settings for the Traefik that k3s ships: routes come from Gateway API objects. The Gateway itself belongs to the
+# bank namespace (platform/gateway.yaml), so Traefik's own default Gateway stays off.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    providers:
+      kubernetesGateway:
+        enabled: true
+    gateway:
+      enabled: false

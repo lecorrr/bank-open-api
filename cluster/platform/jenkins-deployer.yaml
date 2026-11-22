@@ -1,0 +1,55 @@
+# The account Jenkins deploys with: everything a Helm release of the bank's services needs, in the bank
+# namespace only. It cannot touch other namespaces, the cluster or the PostgreSQL StatefulSet.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-deployer
+  namespace: bank
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-deployer
+  namespace: bank
+rules:
+  # Helm keeps each release in a Secret, so the account can read the namespace's Secrets too.
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-deployer
+  namespace: bank
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-deployer
+    namespace: bank
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-deployer
+---
+# A long-lived token for the account; Kubernetes fills in data.token. Rotate it by deleting this Secret and
+# running scripts/cluster-up.sh again.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jenkins-deployer-token
+  namespace: bank
+  annotations:
+    kubernetes.io/service-account.name: jenkins-deployer
+type: kubernetes.io/service-account-token
