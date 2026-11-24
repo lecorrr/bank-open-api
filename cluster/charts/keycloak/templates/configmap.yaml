@@ -1,5 +1,5 @@
-# The realm "bank", imported when Keycloak starts and finds no realm of that name. A later change to the file
-# reaches an existing cluster only through the admin console, or by deleting the realm there (docs/cluster.md).
+# The realm "bank", imported when Keycloak starts and finds no realm of that name. A changed file reaches an existing
+# cluster through scripts/cluster-up.sh, which then empties Keycloak's database so the realm is imported afresh.
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -13,7 +13,7 @@
 
     <groupId>dev.tkachuk</groupId>
     <artifactId>bank-open-api</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
     <name>bank-open-api</name>
     <description>Open banking API of the bank for licensed providers, in front of bank-core</description>
 
@@ -62,6 +62,16 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
         </dependency>
+        <!-- Customers sign in at Keycloak on the bank's pages: OAuth 2.0 login with OpenID Connect. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-client</artifactId>
+        </dependency>
+        <!-- The customer pages: HTML rendered on the server, no JavaScript. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
         <!-- RestClient.Builder for calls to bank-core, RestTemplateBuilder for Keycloak's keys. In Spring Boot 4 it is
              its own starter. -->
         <dependency>
@@ -105,7 +115,7 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- jwt() for MockMvc: requests with a provider's token without signing one. -->
+            <!-- jwt() and oidcLogin() for MockMvc: a provider's token or a signed-in customer without Keycloak. -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security-oauth2-resource-server-test</artifactId>
             <scope>test</scope>

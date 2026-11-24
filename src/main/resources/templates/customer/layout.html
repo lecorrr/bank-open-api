@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!-- The head every customer page shares: the pages include it with their title. -->
+<head th:fragment="head(title)">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title th:text="${title} + ' - Bank'">Bank</title>
+    <link rel="stylesheet" th:href="@{/customer/bank.css}">
+</head>
+</html>

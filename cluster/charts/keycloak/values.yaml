@@ -6,8 +6,9 @@ image:
 # a provider's signed JWT names it as its audience. Back-channel calls (the token endpoint, the keys) may come
 # through other addresses, such as https://k3d-bank-serverlb from Jenkins.
 hostname: https://localhost:8443
-# The admin console stays off the edge: kubectl -n bank port-forward svc/keycloak 8081:8080 (docs/cluster.md).
-adminHostname: http://localhost:8081
+# The admin console stays off the edge: kubectl -n bank port-forward svc/keycloak 8082:8080 (docs/cluster.md).
+# Not 8081: Jenkins has that port.
+adminHostname: http://localhost:8082
 
 database:
   url: jdbc:postgresql://postgres:5432/keycloak
@@ -20,6 +21,13 @@ adminSecret: keycloak-admin
 # Secret with the smoke-test provider's certificate under "certificate-base64" (base64 DER on one line, as the
 # realm file needs it); scripts/cluster-up.sh creates it.
 smokeTestProviderSecret: smoke-test-provider
+
+# Secret with the key client-secret of bank-open-api's client bank-approval; scripts/cluster-up.sh creates it.
+approvalClientSecret: bank-approval-client
+
+# Secret with the keys username and password of the test customer (customer number C1001 in bank-core's demo
+# data); scripts/cluster-up.sh creates it.
+testCustomerSecret: test-customer
 
 # The routes from the bank's Gateway: the realm's endpoints and the login pages' resources (step 4). The master
 # realm and the admin console are not routed.

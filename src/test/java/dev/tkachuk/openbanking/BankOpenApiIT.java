@@ -11,8 +11,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jayway.jsonpath.JsonPath;
+import java.net.http.HttpResponse;
 import java.util.List;
-import java.util.UUID;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,12 +25,12 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 
 /**
  * The whole service on a random port, with PostgreSQL in Testcontainers and WireMock in place of bank-core and of
- * Keycloak's keys. Every call comes from provider A, with its token and certificate as Traefik passes them on.
+ * Keycloak. Every API call comes from provider A, with its token and certificate as Traefik passes them on; the
+ * customer approves on the bank's page.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import({PostgresTestcontainer.class, BankCoreStub.class, KeycloakStub.class})
@@ -48,7 +49,8 @@ class BankOpenApiIT {
     private WireMockServer bankCore;
 
     @Autowired
-    private JdbcClient jdbc;
+    @Qualifier("keycloak")
+    private WireMockServer keycloak;
 
     private RestClient api;
 
@@ -152,12 +154,16 @@ class BankOpenApiIT {
         return JsonPath.read(response.getBody(), "$.consentId");
     }
 
-    // The customer's approval page comes in step 4; until then the test approves in the database.
+    // Without a TPP-Redirect-URI the bank's own page tells the customer the outcome.
     private void customerApproves(String consentId) {
-        int approved = jdbc.sql("UPDATE consent SET status = 'valid' WHERE id = :id AND status = 'received'")
-                .param("id", UUID.fromString(consentId))
-                .update();
-        assertThat(approved).isEqualTo(1);
+        String page = "/customer/consents/" + consentId;
+        TestBrowser browser = new TestBrowser(port);
+        HttpResponse<String> consent = browser.openSignedIn(page, keycloak, TestBrowser.CUSTOMER);
+
+        HttpResponse<String> decided = browser.submit(page, consent, Map.of("decision", "approve"));
+
+        assertThat(decided.statusCode()).isEqualTo(200);
+        assertThat(decided.body()).contains("Consent approved");
     }
 
     private String consentStatus(String consentId) {
@@ -178,10 +184,11 @@ class BankOpenApiIT {
         assertThat(answeredCode).isEqualTo(code);
     }
 
+    // Both accounts are the test customer's, so the consent they approve covers them.
     private void bankCoreKeeps(String iban, String currency, String balance) {
         bankCore.stubFor(get(urlEqualTo("/api/v1/accounts/" + iban)).willReturn(okJson("""
                 {"iban": "%s", "holderName": "Test Holder", "currency": "%s", "balance": %s,
-                 "createdAt": "2026-11-20T08:00:00Z"}
-                """.formatted(iban, currency, balance))));
+                 "customerId": "%s", "createdAt": "2026-11-20T08:00:00Z"}
+                """.formatted(iban, currency, balance, TestBrowser.CUSTOMER))));
     }
 }

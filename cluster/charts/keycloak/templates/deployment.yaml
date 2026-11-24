@@ -17,7 +17,8 @@ spec:
       labels:
         {{- include "keycloak.labels" . | nindent 8 }}
       annotations:
-        # A changed realm file restarts Keycloak; it imports the realm only if the realm is missing.
+        # A changed realm file restarts Keycloak; it imports the realm only if the realm is missing, which
+        # scripts/cluster-up.sh sees to by emptying Keycloak's database first. cluster-up compares this value.
         checksum/realm: {{ .Files.Get "realm/bank-realm.json" | sha256sum }}
     spec:
       automountServiceAccountToken: false
@@ -84,6 +85,18 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.smokeTestProviderSecret }}
                   key: certificate-base64
+            # ${APPROVAL_CLIENT_SECRET}: the secret of bank-open-api's client for the customer pages.
+            - name: APPROVAL_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.approvalClientSecret }}
+                  key: client-secret
+            # ${TEST_CUSTOMER_PASSWORD}: the test customer the smoke test signs in as.
+            - name: TEST_CUSTOMER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.testCustomerSecret }}
+                  key: password
             # Half of the memory limit for the heap; the rest is metaspace, threads and the build at start.
             - name: JAVA_OPTS_KC_HEAP
               value: "-XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25"

@@ -1,11 +1,12 @@
 # The operations bank-open-api offers, taken from GD Next's Openbanking Ukraine specification
 # (https://github.com/GDNext-GmbH/Open-Banking-Ukraine, commit b30abe5), Apache License 2.0, see
 # LICENSE-openbanking-ukraine.txt next to this file. Changed from the original: only these operations;
-# only the request headers the bank reads; no examples; own info, servers, security scheme and tags.
+# only the request headers the bank reads; no examples; own info, servers, security scheme and tags;
+# the bank's note on TPP-Redirect-URI.
 openapi: 3.0.1
 info:
   title: bank-open-api
-  version: 0.3.0
+  version: 0.4.0
   description: |
     The bank's open banking API: the operations bank-open-api offers, taken from GD Next's
     "Openbanking Ukraine" 2.0 specification, which is based on the Berlin Group's NextGenPSD2.
@@ -2199,6 +2200,9 @@ components:
       in: header
       description: |
         URI of the TPP, where the transaction flow shall be redirected to after a Redirect.
+
+        bank-open-api accepts an absolute https URI only: the customer's browser goes there after their decision on
+        the bank's page (the consent's scaRedirect link).
 
         Mandated for the Redirect SCA Approach, specifically
         when TPP-Redirect-Preferred equals "true".

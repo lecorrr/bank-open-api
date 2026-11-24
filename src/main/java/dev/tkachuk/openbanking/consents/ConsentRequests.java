@@ -66,9 +66,9 @@ final class ConsentRequests {
         if (uri == null) {
             return;
         }
-        boolean web = "https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme());
-        if (!web || uri.getHost() == null) {
-            throw new ApiException(ErrorCode.FORMAT_ERROR, "TPP-Redirect-URI must be an absolute http or https URI");
+        // The bank sends the customer's browser there after the decision, so only over TLS, as FAPI 2.0 asks.
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
+            throw new ApiException(ErrorCode.FORMAT_ERROR, "TPP-Redirect-URI must be an absolute https URI");
         }
         if (uri.toString().length() > MAX_REDIRECT_URI_LENGTH) {
             throw new ApiException(ErrorCode.FORMAT_ERROR,

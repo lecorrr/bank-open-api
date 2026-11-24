@@ -79,7 +79,10 @@ class ConsentsControllerTest {
                 .andExpect(jsonPath("$.consentStatus").value("received"))
                 .andExpect(jsonPath("$.consentId").value(CONSENT_ID.toString()))
                 .andExpect(jsonPath("$._links.self.href").value(CONSENT_PATH))
-                .andExpect(jsonPath("$._links.status.href").value(CONSENT_PATH + "/status"));
+                .andExpect(jsonPath("$._links.status.href").value(CONSENT_PATH + "/status"))
+                // Where the provider sends the customer's browser: the bank's page, at its public address.
+                .andExpect(jsonPath("$._links.scaRedirect.href")
+                        .value("https://localhost:8443/customer/consents/" + CONSENT_ID));
 
         ArgumentCaptor<NewConsent> request = ArgumentCaptor.forClass(NewConsent.class);
         verify(consents).create(request.capture(), eq(PROVIDER));
@@ -233,6 +236,8 @@ class ConsentsControllerTest {
     private static Consent consent(ConsentStatus status) {
         ConsentAccount account = new ConsentAccount(RESOURCE_ID, IBAN, null, Set.of(AccessRight.BALANCES));
         Instant created = Instant.parse("2026-11-22T08:00:00Z");
-        return new Consent(CONSENT_ID, PROVIDER, status, List.of(account), true, VALID_TO, 4, null, created, created);
+        String customer = status == ConsentStatus.RECEIVED ? null : "C1001";
+        return new Consent(CONSENT_ID, PROVIDER, customer, status, List.of(account), true, VALID_TO, 4, null, created,
+                created);
     }
 }

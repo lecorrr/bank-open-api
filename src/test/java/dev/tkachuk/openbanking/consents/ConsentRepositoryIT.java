@@ -27,6 +27,7 @@ class ConsentRepositoryIT {
     private static final String IBAN_A = "UA843999990000000000000000001";
     private static final String IBAN_B = "UA033999990000000000000000004";
     private static final String PROVIDER = "provider-a";
+    private static final String CUSTOMER = "C1001";
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 22);
     // timestamptz keeps microseconds, which is why the application's clock ticks in microseconds.
     private static final Instant CREATED = Instant.parse("2026-11-22T08:00:00.123456Z");
@@ -45,13 +46,14 @@ class ConsentRepositoryIT {
         List<ConsentAccount> accounts = List.of(
                 new ConsentAccount(RESOURCE_B, IBAN_B, "USD", Set.of(AccessRight.BALANCES)),
                 new ConsentAccount(RESOURCE_A, IBAN_A, null, both));
-        Consent consent = new Consent(CONSENT_ID, PROVIDER, ConsentStatus.RECEIVED, accounts, true,
+        Consent consent = new Consent(CONSENT_ID, PROVIDER, null, ConsentStatus.RECEIVED, accounts, true,
                 TODAY.plusDays(90), 3, URI.create("https://tpp.example/consents/done"), CREATED, CREATED);
 
         repository.insert(consent);
 
         Consent read = repository.findById(CONSENT_ID).orElseThrow();
         assertThat(read.providerId()).isEqualTo(PROVIDER);
+        assertThat(read.customerId()).isNull();
         assertThat(read.storedStatus()).isEqualTo(ConsentStatus.RECEIVED);
         assertThat(read.accounts()).containsExactlyElementsOf(accounts);
         assertThat(read.recurring()).isTrue();
@@ -72,8 +74,8 @@ class ConsentRepositoryIT {
     // A consent from before providers signed in has no provider; V2 left the column empty for those.
     @Test
     void shouldReadBackConsentWithoutProvider() {
-        repository.insert(new Consent(CONSENT_ID, null, ConsentStatus.VALID, List.of(), true, TODAY.plusDays(30), 4,
-                null, CREATED, CREATED));
+        repository.insert(new Consent(CONSENT_ID, null, null, ConsentStatus.RECEIVED, List.of(), true,
+                TODAY.plusDays(30), 4, null, CREATED, CREATED));
 
         assertThat(repository.findById(CONSENT_ID).orElseThrow().providerId()).isNull();
     }
@@ -87,13 +89,14 @@ class ConsentRepositoryIT {
     void shouldSaveStatusChange() {
         Consent consent = consent(ConsentStatus.RECEIVED);
         repository.insert(consent);
-        consent.approve(TODAY, LATER);
+        consent.approve(CUSTOMER, TODAY, LATER);
 
         assertThat(repository.updateStatus(consent, ConsentStatus.RECEIVED)).isTrue();
 
         Consent read = repository.findById(CONSENT_ID).orElseThrow();
         assertThat(read.storedStatus()).isEqualTo(ConsentStatus.VALID);
         assertThat(read.statusChangedAt()).isEqualTo(LATER);
+        assertThat(read.customerId()).isEqualTo(CUSTOMER);
     }
 
     @Test
@@ -101,7 +104,7 @@ class ConsentRepositoryIT {
         repository.insert(consent(ConsentStatus.RECEIVED));
         Consent first = repository.findById(CONSENT_ID).orElseThrow();
         Consent second = repository.findById(CONSENT_ID).orElseThrow();
-        first.approve(TODAY, LATER);
+        first.approve(CUSTOMER, TODAY, LATER);
         second.terminateByTpp(TODAY, LATER);
 
         assertThat(repository.updateStatus(first, ConsentStatus.RECEIVED)).isTrue();
@@ -131,9 +134,52 @@ class ConsentRepositoryIT {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    // V3: the bank stores who approved, rejected or withdrew a consent with the status that says so.
+    @Test
+    void shouldRefuseDecidedStatusWithoutTheCustomer() {
+        repository.insert(consent(ConsentStatus.RECEIVED));
+
+        assertThatThrownBy(() -> jdbc.sql("UPDATE consent SET status = 'valid' WHERE id = :id")
+                .param("id", CONSENT_ID).update())
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void shouldFindOnlyTheCustomersValidConsentsLatestFirst() {
+        UUID earlier = insert(CUSTOMER, ConsentStatus.VALID, TODAY.plusDays(30), CREATED);
+        UUID later = insert(CUSTOMER, ConsentStatus.VALID, TODAY, LATER);
+        insert("C1002", ConsentStatus.VALID, TODAY.plusDays(30), CREATED);
+        insert(CUSTOMER, ConsentStatus.VALID, TODAY.minusDays(1), CREATED);
+        insert(CUSTOMER, ConsentStatus.REVOKED_BY_PSU, TODAY.plusDays(30), CREATED);
+        insert(null, ConsentStatus.RECEIVED, TODAY.plusDays(30), CREATED);
+
+        List<Consent> found = repository.findValidOf(CUSTOMER, TODAY);
+
+        assertThat(found).extracting(Consent::id).containsExactly(later, earlier);
+        assertThat(found.get(0).accounts()).extracting(ConsentAccount::iban).containsExactly(IBAN_A, IBAN_B);
+        assertThat(found.get(1).customerId()).isEqualTo(CUSTOMER);
+    }
+
+    @Test
+    void shouldFindNoValidConsentsForCustomerWithoutAny() {
+        assertThat(repository.findValidOf(CUSTOMER, TODAY)).isEmpty();
+    }
+
+    private UUID insert(String customer, ConsentStatus status, LocalDate validTo, Instant statusChangedAt) {
+        UUID id = UUID.randomUUID();
+        List<ConsentAccount> accounts = List.of(
+                new ConsentAccount(UUID.randomUUID(), IBAN_A, "UAH", Set.of(AccessRight.BALANCES)),
+                new ConsentAccount(UUID.randomUUID(), IBAN_B, null, Set.of(AccessRight.ACCOUNT_DETAILS)));
+        repository.insert(new Consent(id, PROVIDER, customer, status, accounts, true, validTo, 4, null, CREATED,
+                statusChangedAt));
+        return id;
+    }
+
+    // A received consent has no customer yet; any other status here was decided by CUSTOMER.
     private static Consent consent(ConsentStatus status) {
         ConsentAccount account = new ConsentAccount(RESOURCE_A, IBAN_A, "UAH", Set.of(AccessRight.BALANCES));
-        return new Consent(CONSENT_ID, PROVIDER, status, List.of(account), true, TODAY.plusDays(30), 4, null, CREATED,
-                CREATED);
+        String customer = status == ConsentStatus.RECEIVED ? null : CUSTOMER;
+        return new Consent(CONSENT_ID, PROVIDER, customer, status, List.of(account), true, TODAY.plusDays(30), 4,
+                null, CREATED, CREATED);
     }
 }

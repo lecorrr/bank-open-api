@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{customer/layout :: head('Your consents')}"></head>
+<body>
+<main>
+    <p class="muted" th:if="${customerName != ''}" th:text="|Signed in as ${customerName}|"></p>
+    <h1>Your consents</h1>
+    <p class="notice" th:if="${notice}" th:text="${notice}"></p>
+    <p th:if="${#lists.isEmpty(consents)}">No provider can read your accounts.</p>
+    <section class="consent" th:each="consent : ${consents}">
+        <h2 th:text="${consent.providerId ?: 'A provider'}"></h2>
+        <ul>
+            <li th:each="account : ${consent.accounts}" th:text="${account.iban}"></li>
+        </ul>
+        <p class="muted" th:text="|Until ${consent.validTo}|"></p>
+        <form method="post" th:action="@{/customer/consents/{id}/withdraw(id=${consent.id})}">
+            <button type="submit" class="secondary">Withdraw</button>
+        </form>
+    </section>
+    <form method="post" class="actions" th:action="@{/customer/sign-out}">
+        <button type="submit" class="secondary">Sign out</button>
+    </form>
+</main>
+</body>
+</html>

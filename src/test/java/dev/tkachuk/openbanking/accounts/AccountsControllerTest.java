@@ -23,6 +23,8 @@ import dev.tkachuk.openbanking.common.error.ErrorCode;
 import dev.tkachuk.openbanking.consents.AccessRight;
 import dev.tkachuk.openbanking.consents.ConsentAccount;
 import dev.tkachuk.openbanking.consents.ConsentService;
+import dev.tkachuk.openbanking.consents.ReadableAccount;
+import dev.tkachuk.openbanking.consents.ReadableAccounts;
 import dev.tkachuk.openbanking.security.SecurityConfig;
 import java.math.BigDecimal;
 import java.util.List;
@@ -30,7 +32,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -58,8 +64,13 @@ class AccountsControllerTest {
             Set.of(AccessRight.ACCOUNT_DETAILS, AccessRight.BALANCES));
     private static final ConsentAccount ACCOUNT_B = new ConsentAccount(RESOURCE_B, IBAN_B, null,
             Set.of(AccessRight.ACCOUNT_DETAILS));
-    private static final BankCoreAccount BANK_CORE_A = new BankCoreAccount(IBAN_A, "UAH", new BigDecimal("850.00"));
-    private static final BankCoreAccount BANK_CORE_B = new BankCoreAccount(IBAN_B, "USD", new BigDecimal("10.00"));
+    private static final String CUSTOMER = "C1001";
+    private static final BankCoreAccount BANK_CORE_A =
+            new BankCoreAccount(IBAN_A, "UAH", new BigDecimal("850.00"), CUSTOMER);
+    private static final BankCoreAccount BANK_CORE_B =
+            new BankCoreAccount(IBAN_B, "USD", new BigDecimal("10.00"), CUSTOMER);
+    private static final String RESOURCE_METADATA =
+            "resource_metadata=\"https://localhost:8443/.well-known/oauth-protected-resource\"";
 
     @Autowired
     private MockMvc mockMvc;
@@ -72,7 +83,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldListConsentAccountsUnderTheirResourceIds() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A, ACCOUNT_B));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(readable(ACCOUNT_A, ACCOUNT_B));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
         when(bankCore.findAccount(IBAN_B)).thenReturn(Optional.of(BANK_CORE_B));
 
@@ -93,7 +104,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAddBalancesOnlyWhereTheConsentIncludesThem() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A, ACCOUNT_B));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(readable(ACCOUNT_A, ACCOUNT_B));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
         when(bankCore.findAccount(IBAN_B)).thenReturn(Optional.of(BANK_CORE_B));
 
@@ -108,7 +119,7 @@ class AccountsControllerTest {
     @Test
     void shouldLeaveOutAccountsBankCoreDoesNotKeepAsNamed() throws Exception {
         ConsentAccount inEuro = new ConsentAccount(RESOURCE_B, IBAN_B, "EUR", Set.of(AccessRight.BALANCES));
-        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A, inEuro));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(readable(ACCOUNT_A, inEuro));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.empty());
         when(bankCore.findAccount(IBAN_B)).thenReturn(Optional.of(BANK_CORE_B));
 
@@ -117,9 +128,46 @@ class AccountsControllerTest {
                 .andExpect(jsonPath("$.accounts", hasSize(0)));
     }
 
+    // The consent covers an account only while bank-core says the customer who approved it holds it.
+    @ParameterizedTest(name = "consent of {0}, account of {1}")
+    @MethodSource("accountsNotHeldByTheConsentsCustomer")
+    void shouldLeaveOutAccountsTheConsentsCustomerDoesNotHold(String consentCustomer, String accountCustomer)
+            throws Exception {
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false))
+                .thenReturn(new ReadableAccounts(consentCustomer, List.of(ACCOUNT_A, ACCOUNT_B)));
+        when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
+        when(bankCore.findAccount(IBAN_B))
+                .thenReturn(Optional.of(new BankCoreAccount(IBAN_B, "USD", BigDecimal.TEN, accountCustomer)));
+
+        mockMvc.perform(read("/v2/accounts"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accounts", hasSize(CUSTOMER.equals(consentCustomer) ? 1 : 0)));
+    }
+
+    static Stream<Arguments> accountsNotHeldByTheConsentsCustomer() {
+        return Stream.of(
+                Arguments.of(CUSTOMER, "C1002"),
+                // The bank's own accounts belong to no customer.
+                Arguments.of(CUSTOMER, null),
+                // A consent valid since 0.3.0 or before was approved by nobody the bank knows.
+                Arguments.of(null, CUSTOMER));
+    }
+
+    @Test
+    void shouldAnswerResourceUnknownForAccountOfAnotherCustomer() throws Exception {
+        when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.BALANCES, false))
+                .thenReturn(new ReadableAccount(CUSTOMER, ACCOUNT_A));
+        when(bankCore.findAccount(IBAN_A))
+                .thenReturn(Optional.of(new BankCoreAccount(IBAN_A, "UAH", BigDecimal.TEN, "C1002")));
+
+        mockMvc.perform(read("/v2/accounts/" + RESOURCE_A + "/balances"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("RESOURCE_UNKNOWN"));
+    }
+
     @Test
     void shouldTellConsentsWhenTheCustomerStartedTheRead() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, PROVIDER, true)).thenReturn(List.of());
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, true)).thenReturn(readable());
 
         mockMvc.perform(read("/v2/accounts").header("PSU-IP-Address", "192.0.2.10"))
                 .andExpect(status().isOk());
@@ -130,7 +178,7 @@ class AccountsControllerTest {
     @Test
     void shouldReadAccountDetails() throws Exception {
         when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.ACCOUNT_DETAILS, false))
-                .thenReturn(ACCOUNT_A);
+                .thenReturn(new ReadableAccount(CUSTOMER, ACCOUNT_A));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
 
         mockMvc.perform(read("/v2/accounts/" + RESOURCE_A))
@@ -143,8 +191,9 @@ class AccountsControllerTest {
     @Test
     void shouldReadBalanceWithTheCurrencysDecimals() throws Exception {
         when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.BALANCES, false))
-                .thenReturn(ACCOUNT_A);
-        when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(new BankCoreAccount(IBAN_A, "UAH", BigDecimal.TEN)));
+                .thenReturn(new ReadableAccount(CUSTOMER, ACCOUNT_A));
+        when(bankCore.findAccount(IBAN_A))
+                .thenReturn(Optional.of(new BankCoreAccount(IBAN_A, "UAH", BigDecimal.TEN, CUSTOMER)));
 
         mockMvc.perform(read("/v2/accounts/" + RESOURCE_A + "/balances"))
                 .andExpect(status().isOk())
@@ -158,7 +207,7 @@ class AccountsControllerTest {
     @Test
     void shouldAnswerResourceUnknownWhenBankCoreNoLongerKeepsTheAccount() throws Exception {
         when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.BALANCES, false))
-                .thenReturn(ACCOUNT_A);
+                .thenReturn(new ReadableAccount(CUSTOMER, ACCOUNT_A));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.empty());
 
         mockMvc.perform(read("/v2/accounts/" + RESOURCE_A + "/balances"))
@@ -224,7 +273,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAnswer503WhenBankCoreIsUnavailable() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(readable(ACCOUNT_A));
         when(bankCore.findAccount(IBAN_A)).thenThrow(new BankCoreUnavailableException("bank-core answered 500", null));
 
         mockMvc.perform(read("/v2/accounts"))
@@ -274,9 +323,12 @@ class AccountsControllerTest {
 
     @Test
     void shouldRefuseReadWithoutProviderToken() throws Exception {
-        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID))
+        mockMvc.perform(get("/v2/accounts").secure(true).header("X-Request-ID", REQUEST_ID)
+                        .header("Consent-ID", CONSENT_ID))
                 .andExpect(status().isUnauthorized())
-                .andExpect(header().string("WWW-Authenticate", "Bearer"))
+                .andExpect(header().string("WWW-Authenticate", "Bearer " + RESOURCE_METADATA))
+                // A browser may open the API's addresses too: no HSTS for localhost there either.
+                .andExpect(header().doesNotExist("Strict-Transport-Security"))
                 .andExpect(header().string("X-Request-ID", REQUEST_ID))
                 .andExpect(jsonPath("$.code").value("TOKEN_UNKNOWN"));
 
@@ -288,7 +340,8 @@ class AccountsControllerTest {
         mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID)
                         .with(TestProviders.provider(PROVIDER, "payments")))
                 .andExpect(status().isUnauthorized())
-                .andExpect(header().string("WWW-Authenticate", "Bearer error=\"insufficient_scope\""))
+                .andExpect(header().string("WWW-Authenticate",
+                        "Bearer error=\"insufficient_scope\", " + RESOURCE_METADATA))
                 .andExpect(jsonPath("$.code").value("ROLE_INVALID"));
 
         verifyNoInteractions(consents, bankCore);
@@ -301,10 +354,15 @@ class AccountsControllerTest {
                         .with(jwt().jwt(token -> token.claim("azp", PROVIDER).claim("scope", "accounts")
                                 .claim("cnf", Map.of("x5t#S256", TestProviders.thumbprint(PROVIDER))))))
                 .andExpect(status().isUnauthorized())
-                .andExpect(header().string("WWW-Authenticate", "Bearer error=\"invalid_token\""))
+                .andExpect(header().string("WWW-Authenticate",
+                        "Bearer error=\"invalid_token\", " + RESOURCE_METADATA))
                 .andExpect(jsonPath("$.code").value("CERTIFICATE_MISSING"));
 
         verifyNoInteractions(consents, bankCore);
+    }
+
+    private static ReadableAccounts readable(ConsentAccount... accounts) {
+        return new ReadableAccounts(CUSTOMER, List.of(accounts));
     }
 
     private static MockHttpServletRequestBuilder read(String path) {

@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 
 import dev.tkachuk.openbanking.common.error.ApiException;
 import dev.tkachuk.openbanking.common.error.ErrorCode;
+import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -37,8 +38,11 @@ class ConsentServiceTest {
     private static final String IBAN = "UA843999990000000000000000001";
     private static final String PROVIDER = "provider-a";
     private static final String OTHER_PROVIDER = "provider-b";
+    private static final String CUSTOMER = "C1001";
+    private static final String OTHER_CUSTOMER = "C1002";
     private static final Instant NOW = Instant.parse("2026-11-22T10:00:00Z");
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 22);
+    private static final URI REDIRECT_URI = URI.create("https://tpp.example/consents/done");
 
     @Mock
     private ConsentRepository repository;
@@ -77,6 +81,8 @@ class ConsentServiceTest {
     void shouldAnswerMalformedConsentIdAsUnknown(String consentId) {
         assertCode(() -> service.get(consentId, PROVIDER), ErrorCode.CONSENT_UNKNOWN);
         assertCode(() -> service.accountsToList(consentId, PROVIDER, true), ErrorCode.CONSENT_ID_UNKNOWN);
+        assertCode(() -> service.forCustomer(consentId, CUSTOMER), ErrorCode.CONSENT_UNKNOWN);
+        assertCode(() -> service.approve(consentId, CUSTOMER), ErrorCode.CONSENT_UNKNOWN);
         verifyNoInteractions(repository);
     }
 
@@ -116,7 +122,8 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
         when(repository.countRead(CONSENT_ID, "accounts", TODAY, 2)).thenReturn(true);
 
-        assertThat(service.accountsToList(CONSENT_ID.toString(), PROVIDER, false)).isEqualTo(consent.accounts());
+        assertThat(service.accountsToList(CONSENT_ID.toString(), PROVIDER, false))
+                .isEqualTo(new ReadableAccounts(CUSTOMER, consent.accounts()));
     }
 
     @Test
@@ -124,10 +131,11 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
         when(repository.countRead(CONSENT_ID, "balances:" + RESOURCE_ID, TODAY, 4)).thenReturn(true);
 
-        ConsentAccount account = service.accountToRead(CONSENT_ID.toString(), PROVIDER, RESOURCE_ID.toString(),
+        ReadableAccount account = service.accountToRead(CONSENT_ID.toString(), PROVIDER, RESOURCE_ID.toString(),
                 AccessRight.BALANCES, false);
 
-        assertThat(account.iban()).isEqualTo(IBAN);
+        assertThat(account.account().iban()).isEqualTo(IBAN);
+        assertThat(account.customerId()).isEqualTo(CUSTOMER);
     }
 
     @Test
@@ -185,12 +193,118 @@ class ConsentServiceTest {
         verify(repository, never()).updateStatus(any(), any());
     }
 
+    @Test
+    void shouldShowConsentWaitingForDecisionToAnySignedInCustomer() {
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.RECEIVED, 4)));
+
+        CustomerConsent view = service.forCustomer(CONSENT_ID.toString(), OTHER_CUSTOMER);
+
+        assertThat(view.awaitingDecision()).isTrue();
+        assertThat(view.status()).isEqualTo("received");
+        assertThat(view.providerId()).isEqualTo(PROVIDER);
+        assertThat(view.accounts()).extracting(ConsentAccount::iban).containsExactly(IBAN);
+        assertThat(view.tppRedirectUri()).isEqualTo(REDIRECT_URI);
+    }
+
+    @Test
+    void shouldShowDecidedConsentInFullOnlyToTheCustomerWhoDecided() {
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
+
+        CustomerConsent own = service.forCustomer(CONSENT_ID.toString(), CUSTOMER);
+        CustomerConsent someoneElses = service.forCustomer(CONSENT_ID.toString(), OTHER_CUSTOMER);
+
+        assertThat(own.providerId()).isEqualTo(PROVIDER);
+        assertThat(own.accounts()).hasSize(1);
+        assertThat(someoneElses.status()).isEqualTo("valid");
+        assertThat(someoneElses.awaitingDecision()).isFalse();
+        assertThat(someoneElses.providerId()).isNull();
+        assertThat(someoneElses.accounts()).isEmpty();
+        assertThat(someoneElses.tppRedirectUri()).isNull();
+    }
+
+    @Test
+    void shouldStoreTheApprovingCustomerWithTheNewStatus() {
+        Consent consent = consent(ConsentStatus.RECEIVED, 4);
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
+        when(repository.updateStatus(consent, ConsentStatus.RECEIVED)).thenReturn(true);
+
+        CustomerConsent view = service.approve(CONSENT_ID.toString(), CUSTOMER);
+
+        assertThat(view.status()).isEqualTo("valid");
+        assertThat(view.awaitingDecision()).isFalse();
+        assertThat(consent.customerId()).isEqualTo(CUSTOMER);
+        assertThat(consent.statusChangedAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void shouldStoreTheRejectingCustomerWithTheNewStatus() {
+        Consent consent = consent(ConsentStatus.RECEIVED, 4);
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
+        when(repository.updateStatus(consent, ConsentStatus.RECEIVED)).thenReturn(true);
+
+        CustomerConsent view = service.reject(CONSENT_ID.toString(), CUSTOMER);
+
+        assertThat(view.status()).isEqualTo("rejected");
+        assertThat(consent.customerId()).isEqualTo(CUSTOMER);
+    }
+
+    // Two tabs, or the customer and the provider's DELETE at the same moment: the second change is refused.
+    @Test
+    void shouldReportDecisionMadeAtTheSameTime() {
+        Consent consent = consent(ConsentStatus.RECEIVED, 4);
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
+        when(repository.updateStatus(consent, ConsentStatus.RECEIVED)).thenReturn(false);
+
+        assertCode(() -> service.approve(CONSENT_ID.toString(), CUSTOMER), ErrorCode.STATUS_INVALID);
+    }
+
+    @Test
+    void shouldRefuseDecisionOnConsentNoLongerWaiting() {
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
+
+        assertCode(() -> service.approve(CONSENT_ID.toString(), CUSTOMER), ErrorCode.STATUS_INVALID);
+        assertCode(() -> service.reject(CONSENT_ID.toString(), CUSTOMER), ErrorCode.STATUS_INVALID);
+        verify(repository, never()).updateStatus(any(), any());
+    }
+
+    @Test
+    void shouldListValidConsentsOfTheCustomer() {
+        when(repository.findValidOf(CUSTOMER, TODAY)).thenReturn(List.of(consent(ConsentStatus.VALID, 4)));
+
+        List<CustomerConsent> consents = service.validConsentsOf(CUSTOMER);
+
+        assertThat(consents).extracting(CustomerConsent::id).containsExactly(CONSENT_ID);
+        assertThat(consents).extracting(CustomerConsent::status).containsExactly("valid");
+    }
+
+    @Test
+    void shouldLetTheApprovingCustomerWithdrawConsent() {
+        Consent consent = consent(ConsentStatus.VALID, 4);
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
+        when(repository.updateStatus(consent, ConsentStatus.VALID)).thenReturn(true);
+
+        service.revokeByCustomer(CONSENT_ID.toString(), CUSTOMER);
+
+        assertThat(consent.storedStatus()).isEqualTo(ConsentStatus.REVOKED_BY_PSU);
+    }
+
+    // Another customer's consent answers exactly as one that does not exist.
+    @Test
+    void shouldAnswerAnotherCustomersConsentAsUnknownOnWithdrawal() {
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
+
+        assertCode(() -> service.revokeByCustomer(CONSENT_ID.toString(), OTHER_CUSTOMER), ErrorCode.CONSENT_UNKNOWN);
+        verify(repository, never()).updateStatus(any(), any());
+    }
+
+    // A received consent has no customer yet; any other status here was decided by CUSTOMER.
     private static Consent consent(ConsentStatus status, int frequencyPerDay) {
         ConsentAccount account = new ConsentAccount(RESOURCE_ID, IBAN, "UAH",
                 Set.of(AccessRight.ACCOUNT_DETAILS, AccessRight.BALANCES));
         Instant created = NOW.minusSeconds(3600);
-        return new Consent(CONSENT_ID, PROVIDER, status, List.of(account), true, TODAY.plusDays(30), frequencyPerDay,
-                null, created, created);
+        String customer = status == ConsentStatus.RECEIVED ? null : CUSTOMER;
+        return new Consent(CONSENT_ID, PROVIDER, customer, status, List.of(account), true, TODAY.plusDays(30),
+                frequencyPerDay, REDIRECT_URI, created, created);
     }
 
     private static void assertCode(ThrowingCallable call, ErrorCode code) {

@@ -10,6 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jayway.jsonpath.JsonPath;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,7 +75,8 @@ class ProviderSecurityIT {
                 .header(TestProviders.CERTIFICATE_HEADER, TestProviders.certificateHeader(PROVIDER_A)));
 
         assertRefused(answer, 401, "TOKEN_UNKNOWN");
-        assertThat(answer.getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE)).isEqualTo("Bearer");
+        assertThat(answer.getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE))
+                .isEqualTo("Bearer resource_metadata=\"https://localhost:8443/.well-known/oauth-protected-resource\"");
         assertThat(answer.getHeaders().getFirst("X-Request-ID")).isEqualTo(REQUEST_ID);
     }
 
@@ -121,6 +123,23 @@ class ProviderSecurityIT {
         assertRefused(statusAs(PROVIDER_B, consentId), 403, "CONSENT_UNKNOWN");
         assertRefused(accountsAs(PROVIDER_B, consentId), 400, "CONSENT_UNKNOWN");
         assertThat(statusAs(PROVIDER_A, consentId).getStatusCode().value()).isEqualTo(200);
+    }
+
+    // RFC 9728: what a provider needs to know to get a token for this API, open to anyone.
+    @Test
+    void shouldDescribeTheApiAsProtectedResource() {
+        String metadata = api.get().uri("/.well-known/oauth-protected-resource").retrieve().body(String.class);
+
+        String resource = JsonPath.read(metadata, "$.resource");
+        List<String> authorizationServers = JsonPath.read(metadata, "$.authorization_servers");
+        List<String> scopes = JsonPath.read(metadata, "$.scopes_supported");
+        List<String> bearerMethods = JsonPath.read(metadata, "$.bearer_methods_supported");
+        Boolean boundTokens = JsonPath.read(metadata, "$.tls_client_certificate_bound_access_tokens");
+        assertThat(resource).isEqualTo("https://localhost:8443");
+        assertThat(authorizationServers).containsExactly(TestTokens.ISSUER);
+        assertThat(scopes).containsExactly("accounts");
+        assertThat(bearerMethods).containsExactly("header");
+        assertThat(boundTokens).isTrue();
     }
 
     // A key id the decoder has not seen makes it read Keycloak's keys again, which fails here.

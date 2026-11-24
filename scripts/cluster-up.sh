@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # cluster-up.sh: creates the k3d cluster "bank" and its platform: the bank namespace, the bank's test certificate
 # authority with the certificates it signs, Traefik's HTTPS Gateway with mutual TLS, PostgreSQL with a database
-# for bank-core, bank-open-api and Keycloak, Keycloak with the realm "bank", and the account Jenkins deploys with.
-# Safe to run again: it creates or fixes only what is missing, and starts the cluster if it was stopped. The
-# services themselves come from Jenkins (docs/cluster.md).
+# for bank-core, bank-open-api and Keycloak, Keycloak with the realm "bank" (its clients and the test customer), and
+# the account Jenkins deploys with. Safe to run again: it creates or fixes only what is missing, starts the cluster
+# if it was stopped, restarts it if its node came up without DNS, and has Keycloak import the realm afresh when the
+# realm file changed. The services themselves come from Jenkins (docs/cluster.md).
 #
 #   bash scripts/cluster-up.sh --check   report, change nothing
 #   bash scripts/cluster-up.sh           create or fix what is missing
+#   KEYCLOAK_WAIT_SECONDS=900 bash scripts/cluster-up.sh   more time for Keycloak's start (default 600 seconds)
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.3.0"
+readonly PROJECT_VERSION="0.4.0"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"
@@ -23,15 +25,24 @@ readonly PKI_DIR="${CONFIG_DIR}/pki"
 readonly CERTIFICATE_DAYS=397
 readonly RENEW_DAYS=30
 readonly WAIT_SECONDS=300
+# Keycloak builds itself at each start and creates its tables at the first: up to ten minutes on a slow machine.
+readonly KEYCLOAK_WAIT_SECONDS="${KEYCLOAK_WAIT_SECONDS:-600}"
+# Where k3s keeps the manifests it applies at every start; k3d copies cluster/traefik-config.yaml there.
+readonly NODE_TRAEFIK_CONFIG="/var/lib/rancher/k3s/server/manifests/custom/traefik-config.yaml"
+readonly REALM_FILE="cluster/charts/keycloak/realm/bank-realm.json"
 
 echo "== ${SCRIPT_NAME} (bank-open-api ${PROJECT_VERSION}): k3d cluster '${CLUSTER}' and its platform =="
+if [[ ! "$KEYCLOAK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "KEYCLOAK_WAIT_SECONDS must be a number of seconds, got '${KEYCLOAK_WAIT_SECONDS}'" >&2
+  exit 2
+fi
 
 mode="fix"
 for arg in "$@"; do
   case "$arg" in
     --check) mode="check" ;;
     -h | --help)
-      sed -n '2,10p' "$0"
+      sed -n '2,12p' "$0"
       exit 0
       ;;
     *)
@@ -79,18 +90,20 @@ finish() {
 k() { kubectl --context "$CONTEXT" "$@"; }
 h() { helm --kube-context "$CONTEXT" "$@"; }
 
-# Runs a command until it succeeds or WAIT_SECONDS pass.
-wait_for() {
-  local what=$1 deadline=$((SECONDS + WAIT_SECONDS))
-  shift
+# wait_within SECONDS WHAT COMMAND...: runs the command until it succeeds or the seconds pass.
+wait_within() {
+  local limit=$1 what=$2 deadline=$((SECONDS + $1))
+  shift 2
   until "$@" > /dev/null 2>&1; do
     if ((SECONDS >= deadline)); then
-      echo "   gave up waiting for ${what} after ${WAIT_SECONDS} s" >&2
+      echo "   gave up waiting for ${what} after ${limit} s" >&2
       return 1
     fi
     sleep 3
   done
 }
+
+wait_for() { wait_within "$WAIT_SECONDS" "$@"; }
 
 port_in_use() { ss -Hltn "sport = :$1" 2> /dev/null | grep -q .; }
 
@@ -173,6 +186,35 @@ if ! wait_for "the node" k wait --for=condition=Ready node --all --timeout=10s; 
 fi
 ok "node ready, kubectl context ${CONTEXT}"
 
+# --- the node's DNS ----------------------------------------------------------------------------------------
+
+# A node that starts before the machine has a network (after a power cut, say) gets Docker's DNS without upstream
+# servers, and every image pull then fails with "lookup ...: Try again". Restarting the cluster gives the node the
+# machine's servers again.
+node_without_dns() {
+  docker exec "k3d-${CLUSTER}-server-0" cat /etc/resolv.conf 2> /dev/null | grep -q 'NO EXTERNAL NAMESERVERS'
+}
+
+step "the node's DNS"
+if ! node_without_dns; then
+  ok "the node has DNS servers"
+elif ! getent hosts quay.io > /dev/null 2>&1; then
+  fail "neither this machine nor the cluster's node can look up names: connect to the network and run this again"
+  finish
+elif [[ "$mode" == "check" ]]; then
+  fail "the node started without DNS servers, so image pulls fail; run this script without --check to restart it"
+  finish
+else
+  echo "   the node started without DNS servers; restarting cluster ${CLUSTER}"
+  k3d cluster stop "$CLUSTER" > /dev/null
+  k3d cluster start "$CLUSTER" > /dev/null
+  if node_without_dns || ! wait_for "the node" k wait --for=condition=Ready node --all --timeout=10s; then
+    fail "the node still has no DNS servers after a restart: docker exec k3d-${CLUSTER}-server-0 cat /etc/resolv.conf"
+    finish
+  fi
+  ok "cluster ${CLUSTER} restarted: the node has DNS servers again"
+fi
+
 # --- Traefik and the Gateway API ---------------------------------------------------------------------------
 
 # k3s turns a changed HelmChartConfig into a new Traefik Deployment; this one is the setting of this version.
@@ -182,10 +224,25 @@ traefik_has_settings() {
     | grep -q 'aliasHeadersStrategy=delete'
 }
 
+# k3s applies the node's copy of the settings again at every start, over what kubectl applied: the copy has to be
+# this version's too, or a restart brings the old settings back.
+node_has_traefik_config() {
+  docker exec "k3d-${CLUSTER}-server-0" cat "$NODE_TRAEFIK_CONFIG" 2> /dev/null | cmp -s - cluster/traefik-config.yaml
+}
+
 step "Traefik with the Gateway API"
 if [[ "$mode" == "fix" ]]; then
   # Applied every time, so a cluster made by an earlier version gets this version's settings.
   k apply -f cluster/traefik-config.yaml > /dev/null
+  if ! node_has_traefik_config; then
+    docker cp cluster/traefik-config.yaml "k3d-${CLUSTER}-server-0:${NODE_TRAEFIK_CONFIG}" > /dev/null
+  fi
+fi
+if node_has_traefik_config; then
+  ok "the node keeps this version's Traefik settings for its next start"
+else
+  fail "the node keeps other Traefik settings, which k3s applies again at its next start"
+  note "run this script without --check: it copies cluster/traefik-config.yaml into the node"
 fi
 if ! k -n kube-system get helmchartconfig traefik > /dev/null 2>&1; then
   fail "Traefik's settings (cluster/traefik-config.yaml) are not in the cluster"
@@ -354,7 +411,8 @@ fi
 # --- secrets -----------------------------------------------------------------------------------------------
 
 # Creates a Secret from key=value pairs if it does not exist yet; "random" becomes a new password. The values
-# go to kubectl through a file descriptor, never on a command line.
+# go to kubectl through a file descriptor, never on a command line. Remembers which Secrets it created.
+created_secrets=()
 ensure_secret() {
   local name=$1 pair key value lines=""
   shift
@@ -373,6 +431,7 @@ ensure_secret() {
     lines+="${key}=${value}"$'\n'
   done
   k -n "$NAMESPACE" create secret generic "$name" --from-env-file=<(printf '%s' "$lines") > /dev/null
+  created_secrets+=("$name")
   ok "secret ${name} created"
 }
 
@@ -382,6 +441,29 @@ ensure_secret bank-core-db username=bank password=random
 ensure_secret bank-open-api-db username=openbanking password=random
 ensure_secret keycloak-db username=keycloak password=random
 ensure_secret keycloak-admin username=admin password=random
+# Named in the realm file: the secret of bank-open-api's client for the customer pages, and the test customer.
+ensure_secret bank-approval-client client-secret=random
+ensure_secret test-customer username=artem.demo password=random
+
+# scripts/smoke-test.sh signs in as the test customer with this copy of the password, as it uses the provider's
+# key from the same folder. Written without a line break, readable by this user only.
+customer_password="$(k -n "$NAMESPACE" get secret test-customer -o jsonpath='{.data.password}' 2> /dev/null \
+  | base64 -d || true)"
+customer_password_file="${PKI_DIR}/test-customer.password"
+if [[ -z "$customer_password" ]]; then
+  fail "the Secret test-customer has no password"
+elif [[ -f "$customer_password_file" && "$(cat "$customer_password_file")" == "$customer_password" ]]; then
+  ok "the test customer's password for the smoke test: ${customer_password_file}"
+elif [[ "$mode" == "check" ]]; then
+  fail "${customer_password_file} is missing or old; run this script without --check"
+else
+  (
+    umask 077
+    printf '%s' "$customer_password" > "$customer_password_file"
+  )
+  ok "the test customer's password for the smoke test written to ${customer_password_file}"
+fi
+unset customer_password
 
 # --- PostgreSQL --------------------------------------------------------------------------------------------
 
@@ -440,20 +522,79 @@ keycloak_ready() {
   [[ "$(k -n "$NAMESPACE" get deployment keycloak -o jsonpath='{.status.readyReplicas}' 2> /dev/null)" == "1" ]]
 }
 
-step "Keycloak"
-if [[ "$mode" == "fix" ]]; then
-  echo "   deploying Keycloak; a first start builds it and creates its tables, a few minutes"
-  if h upgrade --install keycloak cluster/charts/keycloak --namespace "$NAMESPACE" \
-    --rollback-on-failure --timeout 10m > /dev/null; then
-    ok "Keycloak deployed (Helm release keycloak), realm bank"
-  else
-    fail "Keycloak did not become ready: kubectl --context ${CONTEXT} -n ${NAMESPACE} logs deploy/keycloak"
+# The realm file's checksum as the Deployment carries it (empty when Keycloak is not deployed yet).
+deployed_realm_checksum() {
+  k -n "$NAMESPACE" get deployment keycloak -o jsonpath='{.spec.template.metadata.annotations.checksum/realm}' \
+    2> /dev/null || true
+}
+
+# What is left to read when Keycloak does not start: the pod's state, the reason it last ended, its log's end.
+keycloak_report() {
+  local pod state
+  pod="$(k -n "$NAMESPACE" get pods -l app.kubernetes.io/name=keycloak -o name 2> /dev/null | head -1)"
+  if [[ -z "$pod" ]]; then
+    note "no Keycloak pod: kubectl --context ${CONTEXT} -n ${NAMESPACE} get events --sort-by=.lastTimestamp"
+    return
+  fi
+  state='{.status.phase}; waiting: {.status.containerStatuses[0].state.waiting.reason}'
+  state+=' {.status.containerStatuses[0].state.waiting.message}; last end:'
+  state+=' {.status.containerStatuses[0].lastState.terminated.reason}'
+  note "${pod}: $(k -n "$NAMESPACE" get "$pod" -o jsonpath="$state" 2> /dev/null)"
+  echo "   the end of Keycloak's log:"
+  k -n "$NAMESPACE" logs "$pod" --tail=25 2>&1 | sed 's/^/     /' || true
+  note "more: kubectl --context ${CONTEXT} -n ${NAMESPACE} describe ${pod}"
+}
+
+# Keycloak imports the realm file only into a database without the realm (start --import-realm skips a realm that
+# exists). So when the file or a Secret it names is new, its database is emptied first; changes made in the admin
+# console go with it.
+reset_keycloak_database() {
+  echo "   ${1}: emptying Keycloak's database, so Keycloak imports the realm afresh"
+  k -n "$NAMESPACE" scale deployment keycloak --replicas=0 > /dev/null
+  k -n "$NAMESPACE" wait --for=delete pod -l app.kubernetes.io/name=keycloak --timeout=120s > /dev/null 2>&1 || true
+  if ! k -n "$NAMESPACE" exec -i postgres-0 -- psql -v ON_ERROR_STOP=1 -q -U postgres -d postgres > /dev/null \
+    <<< 'DROP DATABASE IF EXISTS keycloak WITH (FORCE);'; then
+    fail "could not empty Keycloak's database"
     finish
   fi
+  ensure_database keycloak keycloak-db
+}
+
+step "Keycloak"
+realm_checksum="$(sha256sum "$REALM_FILE" | cut -d ' ' -f 1)"
+deployed_checksum="$(deployed_realm_checksum)"
+realm_secret_new=0
+for secret in "${created_secrets[@]}"; do
+  if [[ "$secret" == "bank-approval-client" || "$secret" == "test-customer" ]]; then realm_secret_new=1; fi
+done
+if [[ "$mode" == "fix" ]]; then
+  if [[ -n "$deployed_checksum" && "$deployed_checksum" != "$realm_checksum" ]]; then
+    reset_keycloak_database "the realm file changed"
+  elif [[ -n "$deployed_checksum" ]] && ((realm_secret_new)); then
+    reset_keycloak_database "a Secret the realm file names is new"
+  fi
+  echo "   deploying Keycloak; a start builds it, the first one also creates its tables: a few minutes"
+  if ! h upgrade --install keycloak cluster/charts/keycloak --namespace "$NAMESPACE" > /dev/null; then
+    fail "Helm could not deploy Keycloak: helm --kube-context ${CONTEXT} -n ${NAMESPACE} status keycloak"
+    finish
+  fi
+  # Back to one after an emptied database; no change otherwise.
+  k -n "$NAMESPACE" scale deployment keycloak --replicas=1 > /dev/null
+  # Without Helm's rollback: a Keycloak that does not start stays, with its state and log to read.
+  if wait_within "$KEYCLOAK_WAIT_SECONDS" "Keycloak" keycloak_ready; then
+    ok "Keycloak deployed (Helm release keycloak), realm bank"
+  else
+    fail "Keycloak did not become ready within ${KEYCLOAK_WAIT_SECONDS} seconds"
+    keycloak_report
+    finish
+  fi
+elif [[ -n "$deployed_checksum" && "$deployed_checksum" != "$realm_checksum" ]]; then
+  fail "Keycloak runs an older realm file; run this script without --check (it empties Keycloak's database)"
 elif keycloak_ready; then
-  ok "Keycloak is ready"
+  ok "Keycloak is ready, with this realm file"
 else
   fail "Keycloak is not ready"
+  keycloak_report
 fi
 
 # The whole way a provider comes in, short of a token: TLS with the test CA's certificate, Traefik, the route,
@@ -543,4 +684,5 @@ else
 fi
 
 note "next: Jenkins with the cluster, then the bank-core and bank-open-api jobs (docs/cluster.md)"
+note "Keycloak's admin console: kubectl --context ${CONTEXT} -n ${NAMESPACE} port-forward svc/keycloak 8082:8080"
 finish

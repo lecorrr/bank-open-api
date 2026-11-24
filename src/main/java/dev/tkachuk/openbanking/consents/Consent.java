@@ -26,6 +26,7 @@ final class Consent {
 
     private final UUID id;
     private final @Nullable String providerId;
+    private @Nullable String customerId;
     private final List<ConsentAccount> accounts;
     private final boolean recurring;
     private final LocalDate validTo;
@@ -35,15 +36,19 @@ final class Consent {
     private ConsentStatus status;
     private Instant statusChangedAt;
 
-    /** providerId is null only for consents made before providers signed in (0.2.x); no provider owns those. */
-    Consent(UUID id, @Nullable String providerId, ConsentStatus status, List<ConsentAccount> accounts,
-            boolean recurring, LocalDate validTo, int frequencyPerDay, @Nullable URI tppRedirectUri, Instant createdAt,
-            Instant statusChangedAt) {
+    /**
+     * providerId is null only for consents made before providers signed in (0.2.x); no provider owns those.
+     * customerId is null until a customer decides on the consent.
+     */
+    Consent(UUID id, @Nullable String providerId, @Nullable String customerId, ConsentStatus status,
+            List<ConsentAccount> accounts, boolean recurring, LocalDate validTo, int frequencyPerDay,
+            @Nullable URI tppRedirectUri, Instant createdAt, Instant statusChangedAt) {
         if (status == ConsentStatus.EXPIRED) {
             throw new IllegalArgumentException("Expiry follows from validTo and is never stored");
         }
         this.id = Objects.requireNonNull(id, "id");
         this.providerId = providerId;
+        this.customerId = customerId;
         this.status = status;
         this.accounts = List.copyOf(accounts);
         this.recurring = recurring;
@@ -93,13 +98,18 @@ final class Consent {
             }
             accounts.add(new ConsentAccount(newResourceId.get(), iban, account.currency(), account.rights()));
         }
-        return new Consent(id, providerId, ConsentStatus.RECEIVED, accounts, request.recurring(), validTo,
+        return new Consent(id, providerId, null, ConsentStatus.RECEIVED, accounts, request.recurring(), validTo,
                 request.frequencyPerDay(), request.tppRedirectUri(), now, now);
     }
 
     /** Whether the provider asked for this consent; for any other provider it does not exist. */
     boolean belongsTo(String provider) {
         return provider.equals(providerId);
+    }
+
+    /** Whether this customer decided on the consent; only they see it among their consents and may withdraw it. */
+    boolean decidedBy(String customer) {
+        return customer.equals(customerId);
     }
 
     /** The status as the provider sees it on the given day: received and valid consents expire after validTo. */
@@ -116,16 +126,30 @@ final class Consent {
         return true;
     }
 
-    /** The customer approves the consent; from then on it allows the reads it names. */
-    void approve(LocalDate today, Instant now) {
+    /**
+     * The customer approves the consent at the bank; from then on it allows the reads it names, of accounts this
+     * customer holds. Whether they hold them is for the caller to check first.
+     */
+    void approve(String customer, LocalDate today, Instant now) {
         requireReceived(today);
+        customerId = Objects.requireNonNull(customer, "customer");
         changeTo(ConsentStatus.VALID, now);
     }
 
     /** The customer refuses the consent. */
-    void reject(LocalDate today, Instant now) {
+    void reject(String customer, LocalDate today, Instant now) {
         requireReceived(today);
+        customerId = Objects.requireNonNull(customer, "customer");
         changeTo(ConsentStatus.REJECTED, now);
+    }
+
+    /** The customer who approved the consent withdraws it at the bank. */
+    void revokeByCustomer(String customer, LocalDate today, Instant now) {
+        if (!decidedBy(customer) || statusOn(today) != ConsentStatus.VALID) {
+            throw new ApiException(ErrorCode.STATUS_INVALID,
+                    "Only a valid consent can be withdrawn, by the customer who approved it");
+        }
+        changeTo(ConsentStatus.REVOKED_BY_PSU, now);
     }
 
     /** The accounts a valid consent lists for the provider. */
@@ -181,6 +205,10 @@ final class Consent {
 
     @Nullable String providerId() {
         return providerId;
+    }
+
+    @Nullable String customerId() {
+        return customerId;
     }
 
     /** The status as stored, without expiry; statusOn is what the provider sees. */

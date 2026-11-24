@@ -33,7 +33,7 @@ class CertificateBindingFilterTest {
     private final SecurityRefusals refusals = new SecurityRefusals((request, response, handler, exception) -> {
         answered.add(exception);
         return new ModelAndView();
-    });
+    }, "https://bank.test/.well-known/oauth-protected-resource");
     private final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/v2/accounts");
     private final MockHttpServletResponse response = new MockHttpServletResponse();
     private final MockFilterChain chain = new MockFilterChain();

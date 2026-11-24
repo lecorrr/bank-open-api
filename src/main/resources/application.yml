@@ -1,5 +1,15 @@
 server:
   port: 8090   # bank-core has 8080 when both run on one machine
+  # Behind Traefik the customer's browser talks HTTPS to localhost:8443; X-Forwarded-* tell Tomcat so, and the
+  # redirects Spring Security builds for the customer pages point there instead of at the pod.
+  forward-headers-strategy: native
+  servlet:
+    session:
+      # Only the customer pages keep a session: a sign-in and a decision take a few minutes.
+      timeout: 10m
+      cookie:
+        secure: true
+        same-site: lax
 
 spring:
   application:
@@ -19,6 +29,9 @@ spring:
       read-timeout: 5s
 
 bank-open-api:
+  # The address providers and customers use. The links the bank hands out start with it: scaRedirect, the
+  # sign-in's redirect URI and the resource in RFC 9728's metadata.
+  public-url: ${PUBLIC_URL:https://localhost:8443}
   bank-core:
     url: ${BANK_CORE_URL:http://localhost:8080}
   consents:
@@ -31,6 +44,16 @@ bank-open-api:
     jwk-set-uri: ${PROVIDER_TOKENS_JWK_SET_URI:https://localhost:8443/realms/bank/protocol/openid-connect/certs}
     # Keycloak's client scope "accounts" puts this into the tokens it issues for this API.
     audience: bank-open-api
+  customer-sign-in:
+    # Keycloak's client for the customer pages, in the same realm as the providers' tokens. The customer's browser
+    # goes to the public address; the Helm chart points the token endpoint at Keycloak inside the cluster and sets
+    # the secret.
+    client-id: bank-approval
+    client-secret: ${CUSTOMER_SIGN_IN_CLIENT_SECRET:not-set-outside-the-cluster}
+    issuer: ${bank-open-api.provider-tokens.issuer}
+    authorization-uri: ${bank-open-api.provider-tokens.issuer}/protocol/openid-connect/auth
+    token-uri: ${CUSTOMER_SIGN_IN_TOKEN_URI:${bank-open-api.provider-tokens.issuer}/protocol/openid-connect/token}
+    jwk-set-uri: ${bank-open-api.provider-tokens.jwk-set-uri}
 
 management:
   endpoints:

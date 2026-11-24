@@ -14,6 +14,7 @@ import dev.tkachuk.openbanking.api.model.HrefType;
 import dev.tkachuk.openbanking.api.model.LinksAll;
 import dev.tkachuk.openbanking.api.model.LinksConsents;
 import dev.tkachuk.openbanking.api.model.LinksGetConsent;
+import dev.tkachuk.openbanking.common.PublicUrlProperties;
 import dev.tkachuk.openbanking.common.error.ApiException;
 import dev.tkachuk.openbanking.common.error.ErrorCode;
 import dev.tkachuk.openbanking.security.AuthenticatedProvider;
@@ -32,13 +33,17 @@ class ConsentsController implements ConsentsApi {
     private static final String ACCOUNT_ACCESS = "account-access";
     private static final String CONSENTS = "/v2/consents/" + ACCOUNT_ACCESS + "/";
     private static final String ACCOUNTS = "/v2/accounts";
+    /** The customer's page for a consent, served by the approval package. */
+    static final String CUSTOMER_CONSENTS = "/customer/consents/";
 
     private final ConsentService consents;
     private final AuthenticatedProvider provider;
+    private final PublicUrlProperties publicUrl;
 
-    ConsentsController(ConsentService consents, AuthenticatedProvider provider) {
+    ConsentsController(ConsentService consents, AuthenticatedProvider provider, PublicUrlProperties publicUrl) {
         this.consents = consents;
         this.provider = provider;
+        this.publicUrl = publicUrl;
     }
 
     @Override
@@ -49,10 +54,14 @@ class ConsentsController implements ConsentsApi {
         }
         Consent consent = consents.create(ConsentRequests.from(body, tppRedirectUri), provider.id());
         String self = CONSENTS + consent.id();
-        LinksConsents links = new LinksConsents().self(new HrefType(self)).status(new HrefType(self + "/status"));
+        // The customer approves the consent on the bank's own page, which the provider sends them to: the Berlin
+        // Group's redirect approach. The link is absolute, since the customer's browser opens it.
+        LinksConsents links = new LinksConsents()
+                .scaRedirect(new HrefType(publicUrl.of(CUSTOMER_CONSENTS + consent.id())))
+                .self(new HrefType(self))
+                .status(new HrefType(self + "/status"));
         AccountAccessConsentResponse201 response =
                 new AccountAccessConsentResponse201(contractStatus(consent), consent.id().toString(), links);
-        // The customer approves the consent on the bank's own page: the Berlin Group's redirect approach.
         return ResponseEntity.created(URI.create(self)).header("ASPSP-SCA-Approach", "REDIRECT").body(response);
     }
 

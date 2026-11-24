@@ -12,6 +12,10 @@ service:
 bankCore:
   url: http://bank-core:8080
 
+# The address providers and customers use: the links the bank hands out start with it (scaRedirect, the sign-in's
+# redirect URI, the resource in RFC 9728's metadata).
+publicUrl: https://localhost:8443
+
 database:
   url: jdbc:postgresql://postgres:5432/openbanking
   # Secret with the keys username and password; scripts/cluster-up.sh creates it.
@@ -23,14 +27,27 @@ providerTokens:
   issuer: https://localhost:8443/realms/bank
   jwkSetUri: http://keycloak:8080/realms/bank/protocol/openid-connect/certs
 
-# The route from the bank's Gateway (made by scripts/cluster-up.sh) to this service, over HTTPS only.
+# Customers sign in on the bank's pages through Keycloak's client bank-approval, in the same realm. The browser goes
+# to the issuer's public address; bank-open-api redeems the code inside the cluster.
+customerSignIn:
+  tokenUri: http://keycloak:8080/realms/bank/protocol/openid-connect/token
+  # Secret with the key client-secret; scripts/cluster-up.sh creates it, and Keycloak's chart reads the same one.
+  existingSecret: bank-approval-client
+
+# The routes from the bank's Gateway (made by scripts/cluster-up.sh) to this service, over HTTPS only.
 route:
   enabled: true
   gateway: bank-gateway
   listener: websecure
-  pathPrefix: /v2
-  # Traefik's middleware that passes the provider's client certificate on (cluster/platform/edge.yaml).
+  # The API, with the provider's client certificate passed on by Traefik's middleware (cluster/platform/edge.yaml).
+  apiPathPrefix: /v2
   clientCertificateMiddleware: pass-client-cert
+  # The customer pages, the sign-in's two steps and RFC 9728's metadata: no client certificate there.
+  pagePathPrefixes:
+    - /customer
+    - /oauth2/authorization
+    - /login/oauth2/code
+    - /.well-known/oauth-protected-resource
 
 # The JVM takes 60 % of the limit for its heap (see the Dockerfile); the rest is metaspace and threads.
 resources:

@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# smoke-test.sh: signs in as the test provider "smoke-test" and takes a consent through what the API offers so
-# far, the way a provider would. It reads Keycloak's discovery document, gets a token with the client credentials
-# grant, signing in with a JWT it signs with its key (private_key_jwt, PS256), over mutual TLS with its
-# certificate, and checks the token is bound to that certificate. Then the consent: create it, read its status,
-# see account reads refused until the customer approves it (the approval page comes in step 4), delete it. It
-# also checks that calls without the certificate or without a token are refused. Stops at the first answer that
-# differs. Jenkins runs it after each deploy; it works the same from this machine.
+# smoke-test.sh: signs in as the test provider "smoke-test" and takes consents through the API the way a provider
+# would, with the test customer deciding on the bank's page as a browser would. It reads Keycloak's discovery
+# document, gets a token with the client credentials grant, signing in with a JWT it signs with its key
+# (private_key_jwt, PS256), over mutual TLS with its certificate, and checks the token is bound to that
+# certificate. Then three consents: one the provider deletes before any decision; one the customer approves on the
+# bank's page (signed in at Keycloak's login form), which the provider then reads under, and which the customer
+# withdraws; one that names another customer's account, which the customer can only reject. It also checks that
+# calls without the certificate or without a token are refused, and that a decision without the page's CSRF token
+# is. Stops at the first answer that differs. Jenkins runs it after each deploy; it works the same from here.
 #
 #   bash scripts/smoke-test.sh                               through Traefik on this machine
 #   bash scripts/smoke-test.sh https://k3d-bank-serverlb       from Jenkins, on k3d's Docker network
 #   bash scripts/smoke-test.sh --token                       only sign in, and print the access token
 #
 # PKI_DIR (default ~/.config/bank-open-api/pki, written by scripts/cluster-up.sh) holds the bank's test CA
-# certificate (ca.crt) and the provider's certificate and key (smoke-test.crt, smoke-test.key).
+# certificate (ca.crt), the provider's certificate and key (smoke-test.crt, smoke-test.key) and the test
+# customer's password (test-customer.password).
 set -euo pipefail
 
 readonly SCRIPT_NAME="smoke-test.sh"
-readonly PROJECT_VERSION="0.3.0"
+readonly PROJECT_VERSION="0.4.0"
 token_only=0
 if [[ "${1:-}" == "--token" ]]; then
   token_only=1
@@ -28,8 +31,15 @@ readonly BASE_URL="${1:-https://localhost:8443}"
 readonly PKI_DIR="${PKI_DIR:-${HOME}/.config/bank-open-api/pki}"
 readonly CLIENT_ID="smoke-test"
 readonly REALM_URL="${BASE_URL}/realms/bank"
-# The first of bank-core's demo accounts.
+# The first of bank-core's demo accounts, the test customer's (C1001), and one of another customer (C1002).
 readonly IBAN="UA843999990000000000000000001"
+readonly OTHERS_IBAN="UA573999990000000000000000002"
+# The test customer in the realm bank; cluster-up.sh writes the password of the Secret test-customer into PKI_DIR.
+readonly CUSTOMER="artem.demo"
+# Where the provider wants the customer's browser back: never opened here, only compared.
+readonly TPP_REDIRECT="https://tpp.example/smoke-test/done"
+# The bank's public address, which the links to its pages and to Keycloak's login start with.
+readonly PUBLIC_URL="https://localhost:8443"
 
 echo "== ${SCRIPT_NAME} (bank-open-api ${PROJECT_VERSION}) against ${BASE_URL} =="
 
@@ -39,7 +49,7 @@ for tool in curl openssl base64; do
     exit 1
   fi
 done
-for file in ca.crt smoke-test.crt smoke-test.key; do
+for file in ca.crt smoke-test.crt smoke-test.key test-customer.password; do
   if [[ ! -s "${PKI_DIR}/${file}" ]]; then
     echo "FAIL ${PKI_DIR}/${file} is missing or empty: run scripts/cluster-up.sh (docs/cluster.md)"
     exit 1
@@ -49,8 +59,25 @@ readonly CA="${PKI_DIR}/ca.crt"
 readonly CERTIFICATE="${PKI_DIR}/smoke-test.crt"
 readonly KEY="${PKI_DIR}/smoke-test.key"
 
+# A browser from Jenkins reaches the public address at BASE_URL: curl connects there but keeps localhost:8443 as
+# the name, for Traefik, the certificate and the cookies.
+base_authority="${BASE_URL#https://}"
+base_authority="${base_authority%%/*}"
+base_host="${base_authority%%:*}"
+base_port="443"
+if [[ "$base_authority" == *:* ]]; then base_port="${base_authority##*:}"; fi
+browser_route=()
+if [[ "${base_host}:${base_port}" != "localhost:8443" ]]; then
+  browser_route=(--connect-to "localhost:8443:${base_host}:${base_port}")
+fi
+
 answer="$(mktemp)"
-trap 'rm -f "$answer"' EXIT
+headers="$(mktemp)"
+cookies="$(mktemp)"
+# The password goes to curl from a file, never on a command line; a line break at its end is not part of it.
+password="$(mktemp)"
+trap 'rm -f "$answer" "$headers" "$cookies" "$password"' EXIT
+tr -d '\n' < "${PKI_DIR}/test-customer.password" > "$password"
 status=""
 
 # call METHOD URL [curl options]: sets $status and keeps the body in $answer. Always TLS with the bank's test CA.
@@ -72,6 +99,99 @@ api() {
 # field NAME: a top-level string field of the last answer; Keycloak and the API answer with compact JSON.
 field() {
   sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" "$answer"
+}
+
+# browser METHOD URL [curl options]: a request as the customer's browser makes it: cookies of this sign-in, no
+# client certificate, no redirects followed. Sets $status, the body in $answer and $location.
+browser() {
+  local method=$1 url=$2
+  shift 2
+  status="$(curl -sS -o "$answer" -D "$headers" -w '%{http_code}' --cacert "$CA" "${browser_route[@]}" \
+    -b "$cookies" -c "$cookies" -X "$method" "$@" "$url")"
+  location="$(sed -n 's/^[Ll]ocation: *\(.*\)\r$/\1/p' "$headers" | tail -1)"
+  # A relative Location is relative to the bank's public address.
+  if [[ "$location" == /* ]]; then location="${PUBLIC_URL}${location}"; fi
+}
+
+# expect_redirect WHAT PREFIX: the last browser answer sends the browser on to an address starting with PREFIX.
+expect_redirect() {
+  local what=$1 prefix=$2
+  if [[ "$status" != "302" || "$location" != "${prefix}"* ]]; then
+    echo "FAIL ${what}: HTTP ${status} to '${location}', expected a redirect to ${prefix}: $(head -c 300 "$answer")"
+    exit 1
+  fi
+  echo "ok   ${what}"
+}
+
+# page_has WHAT TEXT: the last page the browser got shows TEXT.
+page_has() {
+  if ! grep -qF -- "$2" "$answer"; then
+    echo "FAIL $1: the page does not show '$2'"
+    exit 1
+  fi
+  echo "ok   $1"
+}
+
+# no_hsts WHAT: the last answer does not pin the browser to HTTPS. HSTS for localhost would apply to every port of
+# it, Jenkins' http://localhost:8081 included.
+no_hsts() {
+  if grep -qi '^strict-transport-security:' "$headers"; then
+    echo "FAIL $1 sends Strict-Transport-Security, which browsers apply to every localhost port"
+    exit 1
+  fi
+}
+
+# sign_in PAGE: the customer opens one of the bank's pages and signs in at Keycloak's login form, which asks for the
+# password every time (prompt=login). Ends on the page, with the page's CSRF token in $csrf.
+sign_in() {
+  local page=$1 form_action
+  : > "$cookies"
+  browser GET "${PUBLIC_URL}${page}"
+  expect_redirect "  the bank sends a customer who is not signed in to sign in" \
+    "${PUBLIC_URL}/oauth2/authorization/keycloak"
+  browser GET "$location"
+  expect_redirect "  to Keycloak's login, with PKCE" "${PUBLIC_URL}/realms/bank/protocol/openid-connect/auth?"
+  if [[ "$location" != *"code_challenge_method=S256"* || "$location" != *"prompt=login"* ]]; then
+    echo "FAIL the sign-in asks for no S256 PKCE or no fresh login: ${location}"
+    exit 1
+  fi
+  browser GET "$location"
+  expect "  Keycloak's login form" 200
+  no_hsts "Keycloak's login form"
+  form_action="$(tr '\n' ' ' < "$answer" | grep -o '<form[^>]*id="kc-form-login"[^>]*>' \
+    | sed -n 's/.*action="\([^"]*\)".*/\1/p' | sed 's/&amp;/\&/g')"
+  if [[ -z "$form_action" ]]; then
+    echo "FAIL no login form on Keycloak's page: $(head -c 300 "$answer")"
+    exit 1
+  fi
+  browser POST "$form_action" --data-urlencode "username=${CUSTOMER}" \
+    --data-urlencode "password@${password}" --data-urlencode "credentialId="
+  expect_redirect "  ${CUSTOMER} signed in at Keycloak" "${PUBLIC_URL}/login/oauth2/code/keycloak?"
+  browser GET "$location"
+  expect_redirect "  the bank redeems the code and sends the customer back" "${PUBLIC_URL}${page}"
+  browser GET "$location"
+  expect "  the page ${page}" 200
+  no_hsts "the bank's page"
+  csrf="$(sed -n 's/.*name="_csrf" value="\([^"]*\)".*/\1/p' "$answer" | head -1)"
+}
+
+# create_consent IBAN: a consent for balances of one account, with the provider's redirect address. Sets $consent_id
+# and $page, the bank's page for the customer (the scaRedirect link without the public address).
+create_consent() {
+  api POST /v2/consents/account-access -H 'Content-Type: application/json' -H 'PSU-IP-Address: 192.0.2.10' \
+    -H "TPP-Redirect-URI: ${TPP_REDIRECT}" \
+    --data "{\"access\": {\"payments\": [{\"account\": {\"iban\": \"$1\"}, \"rights\": [\"balances\"]}]},
+             \"consentType\": \"detailed\", \"recurringIndicator\": true, \"validTo\": \"9999-12-31\",
+             \"frequencyPerDay\": 4}"
+  expect "consent created" 201 consentStatus received
+  consent_id="$(field consentId)"
+  local link
+  link="$(sed -n 's/.*"scaRedirect":{"href":"\([^"]*\)".*/\1/p' "$answer")"
+  if [[ "$link" != "${PUBLIC_URL}/customer/consents/${consent_id}" ]]; then
+    echo "FAIL the consent's scaRedirect link is '${link}': $(cat "$answer")"
+    exit 1
+  fi
+  page="/customer/consents/${consent_id}"
 }
 
 # expect WHAT STATUS [FIELD VALUE]
@@ -145,14 +265,17 @@ if ((token_only)); then
   exit 0
 fi
 
-# --- the consent ---------------------------------------------------------------------------------------------
+# RFC 9728: where a provider learns which authorization server issues tokens for the API. Open to anyone.
+call GET "${BASE_URL}/.well-known/oauth-protected-resource"
+expect "the API's protected resource metadata" 200 resource "$PUBLIC_URL"
+if ! grep -qF "\"authorization_servers\":[\"${issuer}\"]" "$answer"; then
+  echo "FAIL the metadata names another authorization server than ${issuer}: $(cat "$answer")"
+  exit 1
+fi
 
-api POST /v2/consents/account-access -H 'Content-Type: application/json' -H 'PSU-IP-Address: 192.0.2.10' \
-  --data "{\"access\": {\"payments\": [{\"account\": {\"iban\": \"${IBAN}\"}, \"rights\": [\"balances\"]}]},
-           \"consentType\": \"detailed\", \"recurringIndicator\": true, \"validTo\": \"9999-12-31\",
-           \"frequencyPerDay\": 4}"
-expect "consent created" 201 consentStatus received
-consent_id="$(field consentId)"
+# --- a consent the provider deletes before the customer decides ------------------------------------------------
+
+create_consent "$IBAN"
 
 api GET "/v2/consents/account-access/${consent_id}/status"
 expect "consent ${consent_id} is received" 200 consentStatus received
@@ -174,5 +297,49 @@ expect "consent deleted" 204
 
 api GET "/v2/consents/account-access/${consent_id}/status"
 expect "consent is terminatedByTpp" 200 consentStatus terminatedByTpp
+
+# --- a consent the customer approves on the bank's page, and later withdraws ------------------------------------
+
+create_consent "$IBAN"
+sign_in "$page"
+page_has "the page shows the account the provider asks for" "$IBAN"
+# A form another site posts carries no CSRF token: the bank must refuse it, though the customer may approve.
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=approve
+expect "a decision without the page's CSRF token refused" 403
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=approve --data-urlencode "_csrf=${csrf}"
+expect_redirect "approved, and the browser goes back to the provider" "$TPP_REDIRECT"
+
+api GET "/v2/consents/account-access/${consent_id}/status"
+expect "consent ${consent_id} is valid" 200 consentStatus valid
+api GET /v2/accounts -H "Consent-ID: ${consent_id}"
+expect "the provider lists the account under the consent" 200
+if ! grep -qF "\"iban\":\"${IBAN}\"" "$answer"; then
+  echo "FAIL the account list lacks ${IBAN}: $(cat "$answer")"
+  exit 1
+fi
+resource_id="$(field resourceId)"
+api GET "/v2/accounts/${resource_id}/balances" -H "Consent-ID: ${consent_id}"
+expect "the provider reads the balance" 200
+
+sign_in /customer/consents
+page_has "the customer's consents list it" "$consent_id"
+browser POST "${PUBLIC_URL}${page}/withdraw" --data-urlencode "_csrf=${csrf}"
+expect_redirect "withdrawn on the bank's page" "${PUBLIC_URL}/customer/consents"
+api GET "/v2/consents/account-access/${consent_id}/status"
+expect "consent ${consent_id} is revokedByPsu" 200 consentStatus revokedByPsu
+api GET /v2/accounts -H "Consent-ID: ${consent_id}"
+expect "account reads refused after the withdrawal" 401 code CONSENT_INVALID
+
+# --- a consent for another customer's account: the customer can only reject it -------------------------------
+
+create_consent "$OTHERS_IBAN"
+sign_in "$page"
+page_has "the page says the account is not the customer's" "not yours"
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=approve --data-urlencode "_csrf=${csrf}"
+expect "approval refused: the account is not the customer's" 403
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=reject --data-urlencode "_csrf=${csrf}"
+expect_redirect "rejected, and the browser goes back to the provider" "$TPP_REDIRECT"
+api GET "/v2/consents/account-access/${consent_id}/status"
+expect "consent ${consent_id} is rejected" 200 consentStatus rejected
 
 echo "== smoke test passed =="

@@ -24,6 +24,7 @@ class ConsentTest {
 
     private static final UUID CONSENT_ID = UUID.fromString("3f2a6c1e-8b4d-4e7f-9a12-6c5d4b3a2f10");
     private static final String PROVIDER = "provider-a";
+    private static final String CUSTOMER = "C1001";
     private static final UUID RESOURCE_A = UUID.fromString("0f1b8a4e-3c55-4d6a-9a43-1c2e5b7d9f01");
     private static final UUID RESOURCE_B = UUID.fromString("5a7c9e1f-2b4d-4f68-8a0c-3e5f7a9b1d02");
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 22);
@@ -116,32 +117,78 @@ class ConsentTest {
     void shouldApproveReceivedConsent() {
         Consent consent = create(request(List.of(account(IBAN_A, null, BOTH))));
 
-        consent.approve(TODAY, LATER);
+        consent.approve(CUSTOMER, TODAY, LATER);
 
         assertThat(consent.statusOn(TODAY)).isEqualTo(ConsentStatus.VALID);
         assertThat(consent.statusChangedAt()).isEqualTo(LATER);
+        assertThat(consent.customerId()).isEqualTo(CUSTOMER);
+        assertThat(consent.decidedBy(CUSTOMER)).isTrue();
+        assertThat(consent.decidedBy("C1002")).isFalse();
     }
 
     @Test
     void shouldRejectReceivedConsent() {
         Consent consent = create(request(List.of(account(IBAN_A, null, BOTH))));
 
-        consent.reject(TODAY, LATER);
+        consent.reject(CUSTOMER, TODAY, LATER);
 
         assertThat(consent.statusOn(TODAY)).isEqualTo(ConsentStatus.REJECTED);
+        assertThat(consent.decidedBy(CUSTOMER)).isTrue();
+    }
+
+    @Test
+    void shouldBelongToNoCustomerUntilOneDecides() {
+        Consent consent = create(request(List.of(account(IBAN_A, null, BOTH))));
+
+        assertThat(consent.customerId()).isNull();
+        assertThat(consent.decidedBy(CUSTOMER)).isFalse();
     }
 
     @Test
     void shouldApproveOrRejectOnlyReceivedConsent() {
         Consent consent = approved(TODAY.plusDays(30));
 
-        assertThatThrownBy(() -> consent.reject(TODAY, LATER))
+        assertThatThrownBy(() -> consent.reject(CUSTOMER, TODAY, LATER))
                 .isInstanceOfSatisfying(ApiException.class,
                         e -> assertThat(e.code()).isEqualTo(ErrorCode.STATUS_INVALID));
-        assertThatThrownBy(() -> consent.approve(TODAY, LATER))
+        assertThatThrownBy(() -> consent.approve(CUSTOMER, TODAY, LATER))
                 .isInstanceOfSatisfying(ApiException.class,
                         e -> assertThat(e.code()).isEqualTo(ErrorCode.STATUS_INVALID));
         assertThat(consent.statusOn(TODAY)).isEqualTo(ConsentStatus.VALID);
+    }
+
+    @Test
+    void shouldLetTheApprovingCustomerWithdrawConsent() {
+        Consent consent = approved(TODAY.plusDays(30));
+
+        consent.revokeByCustomer(CUSTOMER, TODAY, LATER);
+
+        assertThat(consent.statusOn(TODAY)).isEqualTo(ConsentStatus.REVOKED_BY_PSU);
+        assertThat(consent.statusChangedAt()).isEqualTo(LATER);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("withdrawalsTheBankRefuses")
+    void shouldRefuseWithdrawalOfConsentNotValidOrNotTheCustomers(String reason, Consent consent, LocalDate day) {
+        ConsentStatus before = consent.storedStatus();
+
+        assertThatThrownBy(() -> consent.revokeByCustomer(CUSTOMER, day, LATER))
+                .isInstanceOfSatisfying(ApiException.class,
+                        e -> assertThat(e.code()).isEqualTo(ErrorCode.STATUS_INVALID));
+        assertThat(consent.storedStatus()).isEqualTo(before);
+    }
+
+    static Stream<Arguments> withdrawalsTheBankRefuses() {
+        Consent byOtherCustomer = create(request(List.of(account(IBAN_A, null, BOTH))));
+        byOtherCustomer.approve("C1002", TODAY, NOW);
+        Consent rejected = create(request(List.of(account(IBAN_A, null, BOTH))));
+        rejected.reject(CUSTOMER, TODAY, NOW);
+        return Stream.of(
+                Arguments.of("approved by another customer", byOtherCustomer, TODAY),
+                Arguments.of("still waiting for a decision", create(request(List.of(account(IBAN_A, null, BOTH)))),
+                        TODAY),
+                Arguments.of("rejected", rejected, TODAY),
+                Arguments.of("expired", approved(TODAY.plusDays(1)), TODAY.plusDays(2)));
     }
 
     @Test
@@ -200,7 +247,7 @@ class ConsentTest {
     @Test
     void shouldRefuseReadOfDataTheConsentDoesNotInclude() {
         Consent consent = create(request(List.of(account(IBAN_A, null, Set.of(AccessRight.ACCOUNT_DETAILS)))));
-        consent.approve(TODAY, LATER);
+        consent.approve(CUSTOMER, TODAY, LATER);
 
         assertThatThrownBy(() -> consent.accountToRead(RESOURCE_A.toString(), AccessRight.BALANCES, TODAY))
                 .isInstanceOfSatisfying(ApiException.class,
@@ -219,8 +266,8 @@ class ConsentTest {
 
     @Test
     void shouldRefuseToStoreExpiredAsStatus() {
-        assertThatThrownBy(() -> new Consent(CONSENT_ID, PROVIDER, ConsentStatus.EXPIRED, List.of(), true, TODAY, 4,
-                null, NOW, NOW)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Consent(CONSENT_ID, PROVIDER, CUSTOMER, ConsentStatus.EXPIRED, List.of(), true,
+                TODAY, 4, null, NOW, NOW)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -234,14 +281,15 @@ class ConsentTest {
 
     @Test
     void shouldBelongToNoProviderWhenMadeBeforeProvidersSignedIn() {
-        Consent consent = new Consent(CONSENT_ID, null, ConsentStatus.VALID, List.of(), true, TODAY, 4, null, NOW, NOW);
+        Consent consent = new Consent(CONSENT_ID, null, CUSTOMER, ConsentStatus.VALID, List.of(), true, TODAY, 4, null,
+                NOW, NOW);
 
         assertThat(consent.belongsTo(PROVIDER)).isFalse();
     }
 
     private static Consent approved(LocalDate validTo) {
         Consent consent = create(new NewConsent(List.of(account(IBAN_A, null, BOTH)), true, validTo, 4, null));
-        consent.approve(TODAY, NOW);
+        consent.approve(CUSTOMER, TODAY, NOW);
         return consent;
     }
 

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{customer/layout :: head('Consent request')}"></head>
+<body>
+<main th:with="consent=${page.consent}">
+    <p class="muted" th:if="${customerName != ''}" th:text="|Signed in as ${customerName}|"></p>
+    <h1>Consent request</h1>
+    <th:block th:if="${consent.awaitingDecision}">
+        <p><strong th:text="${consent.providerId ?: 'A provider'}"></strong> asks to read these accounts:</p>
+        <table>
+            <thead>
+            <tr><th>Account</th><th>Details</th><th>Balances</th><th></th></tr>
+            </thead>
+            <tbody>
+            <tr th:each="account : ${page.accounts}">
+                <td>
+                    <span th:text="${account.iban}"></span> <span class="muted" th:text="${account.currency}"></span>
+                </td>
+                <td th:text="${account.accountDetails} ? 'yes' : 'no'"></td>
+                <td th:text="${account.balances} ? 'yes' : 'no'"></td>
+                <td class="warning" th:text="${account.held} ? '' : 'not yours'"></td>
+            </tr>
+            </tbody>
+        </table>
+        <p th:if="${consent.recurring}"
+           th:text="|Up to ${consent.frequencyPerDay} times a day, until ${consent.validTo}.|"></p>
+        <p th:unless="${consent.recurring}" th:text="|Once, until ${consent.validTo}.|"></p>
+        <p class="warning" th:unless="${page.approvable}">
+            This request names an account that is not yours, so you can only reject it.
+        </p>
+        <!-- Spring Security adds the CSRF token to forms made with th:action. -->
+        <form method="post" class="actions" th:action="@{/customer/consents/{id}(id=${consent.id})}">
+            <button type="submit" name="decision" value="approve" th:disabled="${!page.approvable}">Approve</button>
+            <button type="submit" name="decision" value="reject" class="secondary">Reject</button>
+        </form>
+    </th:block>
+    <th:block th:unless="${consent.awaitingDecision}">
+        <p th:text="|This consent request is ${page.outcome}.|"></p>
+        <p><a th:href="@{/customer/consents}">Your consents</a></p>
+    </th:block>
+</main>
+</body>
+</html>

@@ -19,6 +19,8 @@ import dev.tkachuk.openbanking.common.error.ErrorCode;
 import dev.tkachuk.openbanking.consents.AccessRight;
 import dev.tkachuk.openbanking.consents.ConsentAccount;
 import dev.tkachuk.openbanking.consents.ConsentService;
+import dev.tkachuk.openbanking.consents.ReadableAccount;
+import dev.tkachuk.openbanking.consents.ReadableAccounts;
 import dev.tkachuk.openbanking.security.AuthenticatedProvider;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -35,7 +37,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * The contract's account endpoints. Each read goes through ConsentService first, which decides from the
- * Consent-ID and the calling provider whether the provider may read this data, and only then asks bank-core.
+ * Consent-ID and the calling provider whether the provider may read this data, and only then asks bank-core. The
+ * consent covers an account only while the customer who approved it holds it in bank-core.
  */
 @RestController
 class AccountsController implements AccountsApi {
@@ -59,13 +62,13 @@ class AccountsController implements AccountsApi {
     @Override
     public ResponseEntity<AccountList> getAccountList(UUID requestId, String consentId, @Nullable Boolean withBalance,
             @Nullable String psuIpAddress) {
-        List<ConsentAccount> accounts = consents.accountsToList(consentId, provider.id(),
-                customerPresent(psuIpAddress));
+        ReadableAccounts readable = consents.accountsToList(consentId, provider.id(), customerPresent(psuIpAddress));
         AccountList list = new AccountList(new ArrayList<>());
-        for (ConsentAccount account : accounts) {
-            // An account bank-core no longer has, or one in another currency than the consent named, is left out.
+        for (ConsentAccount account : readable.accounts()) {
+            // An account bank-core no longer has, in another currency than the consent named, or no longer held by
+            // the customer who approved, is left out.
             bankCore.findAccount(account.iban())
-                    .filter(data -> sameCurrency(account, data))
+                    .filter(data -> data.heldBy(readable.customerId(), account.currency()))
                     .ifPresent(data -> list.addAccountsItem(details(account, data, Boolean.TRUE.equals(withBalance))));
         }
         log.info("Account list read under consent {}: {} accounts", consentId, list.getAccounts().size());
@@ -75,9 +78,9 @@ class AccountsController implements AccountsApi {
     @Override
     public ResponseEntity<ReadAccountDetails200Response> readAccountDetails(String accountId, UUID requestId,
             String consentId, @Nullable Boolean withBalance, @Nullable String psuIpAddress) {
-        ConsentAccount account = consents.accountToRead(consentId, provider.id(), accountId,
+        ReadableAccount readable = consents.accountToRead(consentId, provider.id(), accountId,
                 AccessRight.ACCOUNT_DETAILS, customerPresent(psuIpAddress));
-        AccountDetails details = details(account, load(account), Boolean.TRUE.equals(withBalance));
+        AccountDetails details = details(readable.account(), load(readable), Boolean.TRUE.equals(withBalance));
         log.info("Account details read under consent {}", consentId);
         return ResponseEntity.ok(new ReadAccountDetails200Response(details));
     }
@@ -85,17 +88,18 @@ class AccountsController implements AccountsApi {
     @Override
     public ResponseEntity<ReadAccountBalanceResponse200> getBalances(String accountId, UUID requestId,
             String consentId, @Nullable String psuIpAddress) {
-        ConsentAccount account = consents.accountToRead(consentId, provider.id(), accountId, AccessRight.BALANCES,
+        ReadableAccount readable = consents.accountToRead(consentId, provider.id(), accountId, AccessRight.BALANCES,
                 customerPresent(psuIpAddress));
-        BankCoreAccount data = load(account);
+        BankCoreAccount data = load(readable);
         log.info("Balances read under consent {}", consentId);
         return ResponseEntity.ok(new ReadAccountBalanceResponse200(
                 new AccountReference().iban(data.iban()).currency(data.currency()), balances(data)));
     }
 
-    private BankCoreAccount load(ConsentAccount account) {
-        return bankCore.findAccount(account.iban())
-                .filter(data -> sameCurrency(account, data))
+    // An account the consent no longer covers is answered like one the bank does not keep.
+    private BankCoreAccount load(ReadableAccount readable) {
+        return bankCore.findAccount(readable.account().iban())
+                .filter(data -> data.heldBy(readable.customerId(), readable.account().currency()))
                 .orElseThrow(() -> new ApiException(ErrorCode.RESOURCE_UNKNOWN, "The bank keeps no such account"));
     }
 
@@ -121,10 +125,6 @@ class AccountsController implements AccountsApi {
         Balance balance = new Balance(new Amount(data.currency(), amount), BalanceType.INTERIM_AVAILABLE)
                 .referenceDate(LocalDate.now(clock));
         return new ArrayList<>(List.of(balance));
-    }
-
-    private static boolean sameCurrency(ConsentAccount account, BankCoreAccount data) {
-        return account.currency() == null || account.currency().equals(data.currency());
     }
 
     // The contract: PSU-IP-Address is there if and only if the customer started this request.

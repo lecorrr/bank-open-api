@@ -31,14 +31,16 @@ class LayeringTest {
             "bankcore", Set.of("common"),
             "security", Set.of("common"),
             "consents", Set.of("common", "api", "security"),
-            "accounts", Set.of("common", "bankcore", "consents", "api", "security"));
+            "accounts", Set.of("common", "bankcore", "consents", "api", "security"),
+            "approval", Set.of("common", "bankcore", "consents", "security"));
 
-    // Which package alone may use a kind of outside access or framework: HTTP calls to bank-core, SQL, and
-    // Spring Security, which the other packages see only as AuthenticatedProvider.
-    private static final Map<String, String> ONLY_PACKAGE_USING = Map.of(
-            "org.springframework.web.client.", "bankcore",
-            "org.springframework.jdbc.", "consents",
-            "org.springframework.security.", "security");
+    // Which packages alone may use a kind of outside access or framework: HTTP calls (bank-core from bankcore,
+    // Keycloak from security), SQL, and Spring Security, which the other packages see only as AuthenticatedProvider
+    // and SignedInCustomer.
+    private static final Map<String, Set<String>> ONLY_PACKAGES_USING = Map.of(
+            "org.springframework.web.client.", Set.of("bankcore", "security"),
+            "org.springframework.jdbc.", Set.of("consents"),
+            "org.springframework.security.", Set.of("security"));
 
     private static List<SourceFile> sources;
 
@@ -87,8 +89,8 @@ class LayeringTest {
         List<String> violations = new ArrayList<>();
         for (SourceFile source : sources) {
             for (String imported : source.imports()) {
-                ONLY_PACKAGE_USING.forEach((prefix, owner) -> {
-                    if (imported.startsWith(prefix) && !source.module().equals(owner)) {
+                ONLY_PACKAGES_USING.forEach((prefix, owners) -> {
+                    if (imported.startsWith(prefix) && !owners.contains(source.module())) {
                         violations.add(source.relativePath() + " imports " + imported);
                     }
                 });

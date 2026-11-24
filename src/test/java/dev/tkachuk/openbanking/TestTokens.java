@@ -19,13 +19,16 @@ import java.util.UUID;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Access tokens as Keycloak's realm bank issues them to a provider: JWTs of type at+jwt, signed with PS256 and
- * bound to the provider's certificate. The key is made for each test run; KeycloakStub serves its public half.
+ * Tokens as Keycloak's realm bank issues them: a provider's access tokens, JWTs of type at+jwt signed with PS256
+ * and bound to the provider's certificate, and a customer's ID tokens for the bank's pages. The key is made for
+ * each test run; KeycloakStub serves its public half.
  */
 public final class TestTokens {
 
     public static final String ISSUER = "https://keycloak.test/realms/bank";
     public static final String KEY_ID = "test-key";
+    /** Keycloak's client for the customer pages. */
+    public static final String CUSTOMER_CLIENT = "bank-approval";
 
     private static final KeyPair KEYS = newKeyPair();
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -68,18 +71,57 @@ public final class TestTokens {
 
     /** Signs with the test key, naming the key id given in the header. */
     public static String sign(String keyId, Map<String, Object> claims) {
-        String header = base64Url(JSON.writeValueAsBytes(Map.of("alg", "PS256", "typ", "at+jwt", "kid", keyId)));
+        return sign(keyId, "at+jwt", "PS256", claims);
+    }
+
+    /** The claims of a customer's ID token for the customer pages; nonce is the one the bank sent to sign in. */
+    public static Map<String, Object> idTokenClaims(String customerId, String nonce) {
+        long now = Instant.now().getEpochSecond();
+        Map<String, Object> claims = new LinkedHashMap<>();
+        claims.put("iss", ISSUER);
+        claims.put("aud", CUSTOMER_CLIENT);
+        claims.put("azp", CUSTOMER_CLIENT);
+        claims.put("sub", UUID.nameUUIDFromBytes(customerId.getBytes(StandardCharsets.UTF_8)).toString());
+        claims.put("iat", now);
+        claims.put("exp", now + 300);
+        claims.put("auth_time", now);
+        claims.put("nonce", nonce);
+        claims.put("name", "Test Customer");
+        claims.put("customer_id", customerId);
+        return claims;
+    }
+
+    /** An ID token as Keycloak signs it: type JWT, PS256. */
+    public static String idToken(Map<String, Object> claims) {
+        return sign(KEY_ID, "JWT", "PS256", claims);
+    }
+
+    /** An ID token signed with RS256, an algorithm the realm bank does not use. */
+    public static String rs256IdToken(Map<String, Object> claims) {
+        return sign(KEY_ID, "JWT", "RS256", claims);
+    }
+
+    private static String sign(String keyId, String type, String algorithm, Map<String, Object> claims) {
+        String header = base64Url(JSON.writeValueAsBytes(Map.of("alg", algorithm, "typ", type, "kid", keyId)));
         String signingInput = header + "." + base64Url(JSON.writeValueAsBytes(claims));
         try {
-            // PS256 as RFC 7518 defines it: RSASSA-PSS with SHA-256, MGF1 with SHA-256 and a 32-byte salt.
-            Signature signature = Signature.getInstance("RSASSA-PSS");
-            signature.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+            Signature signature = signatureFor(algorithm);
             signature.initSign(KEYS.getPrivate());
             signature.update(signingInput.getBytes(StandardCharsets.US_ASCII));
             return signingInput + "." + base64Url(signature.sign());
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("Cannot sign a test token", e);
         }
+    }
+
+    private static Signature signatureFor(String algorithm) throws GeneralSecurityException {
+        if (algorithm.equals("RS256")) {
+            return Signature.getInstance("SHA256withRSA");
+        }
+        // PS256 as RFC 7518 defines it: RSASSA-PSS with SHA-256, MGF1 with SHA-256 and a 32-byte salt.
+        Signature signature = Signature.getInstance("RSASSA-PSS");
+        signature.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+        return signature;
     }
 
     private static KeyPair newKeyPair() {

@@ -110,8 +110,9 @@ class ConsentRequestsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"/consents/done", "ftp://tpp.example/done", "mailto:help@tpp.example", "https:/done"})
-    void shouldRefuseRedirectUriThatIsNotWebAddress(String uri) {
+    @ValueSource(strings = {"/consents/done", "http://tpp.example/done", "ftp://tpp.example/done",
+            "mailto:help@tpp.example", "https:/done"})
+    void shouldRefuseRedirectUriThatIsNotHttpsAddress(String uri) {
         assertRefused(body(currentAccount()), URI.create(uri), ErrorCode.FORMAT_ERROR);
     }
 

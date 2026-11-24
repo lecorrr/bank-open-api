@@ -7,8 +7,11 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -28,13 +31,14 @@ class ConsentRepository {
 
     void insert(Consent consent) {
         jdbc.sql("""
-                INSERT INTO consent (id, provider_id, status, recurring, valid_to, frequency_per_day,
+                INSERT INTO consent (id, provider_id, customer_id, status, recurring, valid_to, frequency_per_day,
                                      tpp_redirect_uri, created_at, status_changed_at)
-                VALUES (:id, :providerId, :status, :recurring, :validTo, :frequencyPerDay,
+                VALUES (:id, :providerId, :customerId, :status, :recurring, :validTo, :frequencyPerDay,
                         :tppRedirectUri, :createdAt, :statusChangedAt)
                 """)
                 .param("id", consent.id())
                 .param("providerId", consent.providerId())
+                .param("customerId", consent.customerId())
                 .param("status", consent.storedStatus().code())
                 .param("recurring", consent.recurring())
                 .param("validTo", consent.validTo())
@@ -64,26 +68,53 @@ class ConsentRepository {
     Optional<Consent> findById(UUID id) {
         // The consent first: its accounts were inserted in the same transaction, so once it is there they are too.
         return jdbc.sql("""
-                SELECT provider_id, status, recurring, valid_to, frequency_per_day, tpp_redirect_uri, created_at,
-                       status_changed_at
+                SELECT id, provider_id, customer_id, status, recurring, valid_to, frequency_per_day, tpp_redirect_uri,
+                       created_at, status_changed_at
                 FROM consent
                 WHERE id = :id
                 """)
                 .param("id", id)
                 .query(ConsentRepository::row)
                 .optional()
-                .map(row -> row.toConsent(id, accountsOf(id)));
+                .map(row -> row.toConsent(accountsOf(List.of(id)).getOrDefault(id, List.of())));
     }
 
-    /** Saves a status change, unless someone else changed the status since the consent was read. */
+    /**
+     * The consents this customer approved that are valid on the given day, newest approval first. Two queries
+     * whatever their number: the consents, then all their accounts.
+     */
+    List<Consent> findValidOf(String customerId, LocalDate today) {
+        List<ConsentRow> rows = jdbc.sql("""
+                SELECT id, provider_id, customer_id, status, recurring, valid_to, frequency_per_day, tpp_redirect_uri,
+                       created_at, status_changed_at
+                FROM consent
+                WHERE customer_id = :customerId AND status = 'valid' AND valid_to >= :today
+                ORDER BY status_changed_at DESC, id
+                """)
+                .param("customerId", customerId)
+                .param("today", today)
+                .query(ConsentRepository::row)
+                .list();
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, List<ConsentAccount>> accounts = accountsOf(rows.stream().map(ConsentRow::id).toList());
+        return rows.stream().map(row -> row.toConsent(accounts.getOrDefault(row.id(), List.of()))).toList();
+    }
+
+    /**
+     * Saves a status change and the customer who made it, unless someone else changed the status since the consent
+     * was read.
+     */
     boolean updateStatus(Consent consent, ConsentStatus statusAsRead) {
         return jdbc.sql("""
                 UPDATE consent
-                SET status = :status, status_changed_at = :statusChangedAt
+                SET status = :status, status_changed_at = :statusChangedAt, customer_id = :customerId
                 WHERE id = :id AND status = :statusAsRead
                 """)
                 .param("status", consent.storedStatus().code())
                 .param("statusChangedAt", utc(consent.statusChangedAt()))
+                .param("customerId", consent.customerId())
                 .param("id", consent.id())
                 .param("statusAsRead", statusAsRead.code())
                 .update() == 1;
@@ -108,16 +139,21 @@ class ConsentRepository {
                 .update() == 1;
     }
 
-    private List<ConsentAccount> accountsOf(UUID consentId) {
-        return jdbc.sql("""
-                SELECT resource_id, iban, currency, account_details, balances
+    // The accounts of each consent, in the order the provider named them.
+    private Map<UUID, List<ConsentAccount>> accountsOf(List<UUID> consentIds) {
+        Map<UUID, List<ConsentAccount>> accounts = new HashMap<>();
+        jdbc.sql("""
+                SELECT consent_id, resource_id, iban, currency, account_details, balances
                 FROM consent_account
-                WHERE consent_id = :consentId
-                ORDER BY position
+                WHERE consent_id IN (:consentIds)
+                ORDER BY consent_id, position
                 """)
-                .param("consentId", consentId)
-                .query(ConsentRepository::account)
-                .list();
+                .param("consentIds", consentIds)
+                .query((rs, rowNum) -> Map.entry(rs.getObject("consent_id", UUID.class), account(rs, rowNum)))
+                .list()
+                .forEach(entry -> accounts.computeIfAbsent(entry.getKey(), id -> new ArrayList<>())
+                        .add(entry.getValue()));
+        return accounts;
     }
 
     private static ConsentAccount account(ResultSet rs, int rowNum) throws SQLException {
@@ -135,7 +171,9 @@ class ConsentRepository {
     private static ConsentRow row(ResultSet rs, int rowNum) throws SQLException {
         String redirectUri = rs.getString("tpp_redirect_uri");
         return new ConsentRow(
+                rs.getObject("id", UUID.class),
                 rs.getString("provider_id"),
+                rs.getString("customer_id"),
                 ConsentStatus.fromCode(rs.getString("status")),
                 rs.getBoolean("recurring"),
                 rs.getObject("valid_to", LocalDate.class),
@@ -150,13 +188,13 @@ class ConsentRepository {
         return instant.atOffset(ZoneOffset.UTC);
     }
 
-    private record ConsentRow(@Nullable String providerId, ConsentStatus status, boolean recurring,
-            LocalDate validTo, int frequencyPerDay, @Nullable URI tppRedirectUri, Instant createdAt,
-            Instant statusChangedAt) {
+    private record ConsentRow(UUID id, @Nullable String providerId, @Nullable String customerId,
+            ConsentStatus status, boolean recurring, LocalDate validTo, int frequencyPerDay,
+            @Nullable URI tppRedirectUri, Instant createdAt, Instant statusChangedAt) {
 
-        Consent toConsent(UUID id, List<ConsentAccount> accounts) {
-            return new Consent(id, providerId, status, accounts, recurring, validTo, frequencyPerDay, tppRedirectUri,
-                    createdAt, statusChangedAt);
+        Consent toConsent(List<ConsentAccount> accounts) {
+            return new Consent(id, providerId, customerId, status, accounts, recurring, validTo, frequencyPerDay,
+                    tppRedirectUri, createdAt, statusChangedAt);
         }
     }
 }

@@ -20,19 +20,22 @@ import org.springframework.web.servlet.ModelAndView;
 
 class SecurityRefusalsTest {
 
+    private static final String METADATA = "https://bank.test/.well-known/oauth-protected-resource";
+
     private final List<Exception> answered = new ArrayList<>();
     private final SecurityRefusals refusals = new SecurityRefusals((request, response, handler, exception) -> {
         answered.add(exception);
         return new ModelAndView();
-    });
+    }, METADATA);
     private final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/v2/accounts");
     private final MockHttpServletResponse response = new MockHttpServletResponse();
 
     @Test
-    void shouldAnswerRequestWithoutTokenWithTheBareChallenge() {
+    void shouldAnswerRequestWithoutTokenWithChallengeWithoutError() {
         refusals.commence(request, response, new InsufficientAuthenticationException("Full authentication"));
 
-        assertThat(response.getHeader("WWW-Authenticate")).isEqualTo("Bearer");
+        // RFC 9728: the challenge points to where the provider learns how to get a token.
+        assertThat(response.getHeader("WWW-Authenticate")).isEqualTo("Bearer resource_metadata=\"" + METADATA + "\"");
         assertThat(answeredCode()).isEqualTo(ErrorCode.TOKEN_UNKNOWN);
     }
 
@@ -42,7 +45,8 @@ class SecurityRefusalsTest {
 
         refusals.commence(request, response, invalidToken(expired));
 
-        assertThat(response.getHeader("WWW-Authenticate")).isEqualTo("Bearer error=\"invalid_token\"");
+        assertThat(response.getHeader("WWW-Authenticate"))
+                .isEqualTo("Bearer error=\"invalid_token\", resource_metadata=\"" + METADATA + "\"");
         ApiException refusal = (ApiException) answered.get(0);
         assertThat(refusal.code()).isEqualTo(ErrorCode.TOKEN_EXPIRED);
         assertThat(refusal.providerDetail()).contains("The access token has expired; get a new one");
@@ -78,13 +82,14 @@ class SecurityRefusalsTest {
     void shouldAnswerMissingScopeAsRoleInvalid() {
         refusals.handle(request, response, new AccessDeniedException("Access Denied"));
 
-        assertThat(response.getHeader("WWW-Authenticate")).isEqualTo("Bearer error=\"insufficient_scope\"");
+        assertThat(response.getHeader("WWW-Authenticate"))
+                .isEqualTo("Bearer error=\"insufficient_scope\", resource_metadata=\"" + METADATA + "\"");
         assertThat(answeredCode()).isEqualTo(ErrorCode.ROLE_INVALID);
     }
 
     @Test
     void shouldFailLoudlyWhenNoExceptionHandlerAnswers() {
-        SecurityRefusals unanswered = new SecurityRefusals((req, res, handler, exception) -> null);
+        SecurityRefusals unanswered = new SecurityRefusals((req, res, handler, exception) -> null, METADATA);
 
         assertThatThrownBy(() -> unanswered.handle(request, response, new AccessDeniedException("Access Denied")))
                 .isInstanceOf(IllegalStateException.class)

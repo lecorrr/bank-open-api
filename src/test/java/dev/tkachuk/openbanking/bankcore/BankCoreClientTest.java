@@ -31,7 +31,7 @@ class BankCoreClientTest {
     private static final String IBAN = "UA843999990000000000000000001";
     private static final String ACCOUNT_URL = "http://bank-core.test:8080/api/v1/accounts/" + IBAN;
     private static final String ACCOUNT_JSON = """
-            {"iban": "%s", "holderName": "Test Holder", "currency": "UAH", "balance": 850.00,
+            {"iban": "%s", "holderName": "Test Holder", "currency": "UAH", "balance": 850.00, "customerId": "C1001",
              "createdAt": "2026-11-20T08:00:00Z"}
             """.formatted(IBAN);
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
@@ -52,8 +52,19 @@ class BankCoreClientTest {
         bankCore.expect(requestTo(ACCOUNT_URL)).andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess(ACCOUNT_JSON, MediaType.APPLICATION_JSON));
 
-        assertThat(client.findAccount(IBAN)).contains(new BankCoreAccount(IBAN, "UAH", new BigDecimal("850.00")));
+        assertThat(client.findAccount(IBAN))
+                .contains(new BankCoreAccount(IBAN, "UAH", new BigDecimal("850.00"), "C1001"));
         bankCore.verify();
+    }
+
+    // bank-core 0.8.0 answers null for the bank's own accounts; bank-core before 0.8.0 leaves the field out.
+    @Test
+    void shouldReadAccountWithoutCustomer() {
+        bankCore.expect(requestTo(ACCOUNT_URL)).andRespond(withSuccess("""
+                {"iban": "%s", "holderName": "Bank", "currency": "UAH", "balance": 0, "customerId": null}
+                """.formatted(IBAN), MediaType.APPLICATION_JSON));
+
+        assertThat(client.findAccount(IBAN)).hasValueSatisfying(account -> assertThat(account.customerId()).isNull());
     }
 
     @Test

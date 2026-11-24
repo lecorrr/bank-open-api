@@ -71,8 +71,8 @@ pipeline {
             steps {
                 // The way a provider comes in: k3d's load balancer, Traefik's mutual TLS, the Gateway, the route.
                 // Jenkins is on k3d's Docker network, where the load balancer listens on port 443. The test
-                // provider's key and certificate and the bank's test CA come from the cluster's Secrets into a
-                // folder only this build sees.
+                // provider's key and certificate, the bank's test CA and the test customer's password come from
+                // the cluster's Secrets into a folder only this build sees.
                 sh '''
                     export PKI_DIR="$(mktemp -d)"
                     trap 'rm -rf "$PKI_DIR"' EXIT
@@ -82,6 +82,8 @@ pipeline {
                         | base64 -d > "$PKI_DIR/smoke-test.crt"
                     kubectl --namespace bank get secret smoke-test-provider -o jsonpath='{.data.tls\\.key}' \
                         | base64 -d > "$PKI_DIR/smoke-test.key"
+                    kubectl --namespace bank get secret test-customer -o jsonpath='{.data.password}' \
+                        | base64 -d > "$PKI_DIR/test-customer.password"
                     bash scripts/smoke-test.sh https://k3d-bank-serverlb
                 '''
             }
