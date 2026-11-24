@@ -19,6 +19,7 @@ import dev.tkachuk.openbanking.common.error.ErrorCode;
 import dev.tkachuk.openbanking.consents.AccessRight;
 import dev.tkachuk.openbanking.consents.ConsentAccount;
 import dev.tkachuk.openbanking.consents.ConsentService;
+import dev.tkachuk.openbanking.security.AuthenticatedProvider;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -34,7 +35,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * The contract's account endpoints. Each read goes through ConsentService first, which decides from the
- * Consent-ID whether the provider may read this data, and only then asks bank-core.
+ * Consent-ID and the calling provider whether the provider may read this data, and only then asks bank-core.
  */
 @RestController
 class AccountsController implements AccountsApi {
@@ -44,18 +45,22 @@ class AccountsController implements AccountsApi {
 
     private final ConsentService consents;
     private final BankCoreClient bankCore;
+    private final AuthenticatedProvider provider;
     private final Clock clock;
 
-    AccountsController(ConsentService consents, BankCoreClient bankCore, Clock clock) {
+    AccountsController(ConsentService consents, BankCoreClient bankCore, AuthenticatedProvider provider,
+            Clock clock) {
         this.consents = consents;
         this.bankCore = bankCore;
+        this.provider = provider;
         this.clock = clock;
     }
 
     @Override
     public ResponseEntity<AccountList> getAccountList(UUID requestId, String consentId, @Nullable Boolean withBalance,
             @Nullable String psuIpAddress) {
-        List<ConsentAccount> accounts = consents.accountsToList(consentId, customerPresent(psuIpAddress));
+        List<ConsentAccount> accounts = consents.accountsToList(consentId, provider.id(),
+                customerPresent(psuIpAddress));
         AccountList list = new AccountList(new ArrayList<>());
         for (ConsentAccount account : accounts) {
             // An account bank-core no longer has, or one in another currency than the consent named, is left out.
@@ -70,8 +75,8 @@ class AccountsController implements AccountsApi {
     @Override
     public ResponseEntity<ReadAccountDetails200Response> readAccountDetails(String accountId, UUID requestId,
             String consentId, @Nullable Boolean withBalance, @Nullable String psuIpAddress) {
-        ConsentAccount account = consents.accountToRead(consentId, accountId, AccessRight.ACCOUNT_DETAILS,
-                customerPresent(psuIpAddress));
+        ConsentAccount account = consents.accountToRead(consentId, provider.id(), accountId,
+                AccessRight.ACCOUNT_DETAILS, customerPresent(psuIpAddress));
         AccountDetails details = details(account, load(account), Boolean.TRUE.equals(withBalance));
         log.info("Account details read under consent {}", consentId);
         return ResponseEntity.ok(new ReadAccountDetails200Response(details));
@@ -80,7 +85,7 @@ class AccountsController implements AccountsApi {
     @Override
     public ResponseEntity<ReadAccountBalanceResponse200> getBalances(String accountId, UUID requestId,
             String consentId, @Nullable String psuIpAddress) {
-        ConsentAccount account = consents.accountToRead(consentId, accountId, AccessRight.BALANCES,
+        ConsentAccount account = consents.accountToRead(consentId, provider.id(), accountId, AccessRight.BALANCES,
                 customerPresent(psuIpAddress));
         BankCoreAccount data = load(account);
         log.info("Balances read under consent {}", consentId);

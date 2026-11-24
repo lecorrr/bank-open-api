@@ -23,6 +23,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 class ConsentTest {
 
     private static final UUID CONSENT_ID = UUID.fromString("3f2a6c1e-8b4d-4e7f-9a12-6c5d4b3a2f10");
+    private static final String PROVIDER = "provider-a";
     private static final UUID RESOURCE_A = UUID.fromString("0f1b8a4e-3c55-4d6a-9a43-1c2e5b7d9f01");
     private static final UUID RESOURCE_B = UUID.fromString("5a7c9e1f-2b4d-4f68-8a0c-3e5f7a9b1d02");
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 22);
@@ -218,8 +219,24 @@ class ConsentTest {
 
     @Test
     void shouldRefuseToStoreExpiredAsStatus() {
-        assertThatThrownBy(() -> new Consent(CONSENT_ID, ConsentStatus.EXPIRED, List.of(), true, TODAY, 4, null,
-                NOW, NOW)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Consent(CONSENT_ID, PROVIDER, ConsentStatus.EXPIRED, List.of(), true, TODAY, 4,
+                null, NOW, NOW)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldBelongOnlyToTheProviderThatAskedForIt() {
+        Consent consent = create(request(List.of(account(IBAN_A, null, BOTH))));
+
+        assertThat(consent.providerId()).isEqualTo(PROVIDER);
+        assertThat(consent.belongsTo(PROVIDER)).isTrue();
+        assertThat(consent.belongsTo("provider-b")).isFalse();
+    }
+
+    @Test
+    void shouldBelongToNoProviderWhenMadeBeforeProvidersSignedIn() {
+        Consent consent = new Consent(CONSENT_ID, null, ConsentStatus.VALID, List.of(), true, TODAY, 4, null, NOW, NOW);
+
+        assertThat(consent.belongsTo(PROVIDER)).isFalse();
     }
 
     private static Consent approved(LocalDate validTo) {
@@ -230,7 +247,7 @@ class ConsentTest {
 
     private static Consent create(NewConsent request) {
         Deque<UUID> resourceIds = new ArrayDeque<>(List.of(RESOURCE_A, RESOURCE_B));
-        return Consent.create(CONSENT_ID, request, TODAY, MAX_VALIDITY_DAYS, resourceIds::pop, NOW);
+        return Consent.create(CONSENT_ID, PROVIDER, request, TODAY, MAX_VALIDITY_DAYS, resourceIds::pop, NOW);
     }
 
     private static NewConsent request(List<NewConsent.RequestedAccount> accounts) {

@@ -16,18 +16,23 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 
-/** The whole service on a random port, with PostgreSQL in Testcontainers and WireMock in place of bank-core. */
+/**
+ * The whole service on a random port, with PostgreSQL in Testcontainers and WireMock in place of bank-core and of
+ * Keycloak's keys. Every call comes from provider A, with its token and certificate as Traefik passes them on.
+ */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Import({PostgresTestcontainer.class, BankCoreStub.class})
+@Import({PostgresTestcontainer.class, BankCoreStub.class, KeycloakStub.class})
 class BankOpenApiIT {
 
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
@@ -39,6 +44,7 @@ class BankOpenApiIT {
     private int port;
 
     @Autowired
+    @Qualifier("bankCore")
     private WireMockServer bankCore;
 
     @Autowired
@@ -52,6 +58,9 @@ class BankOpenApiIT {
         bankCoreKeeps(IBAN_A, "UAH", "850.00");
         bankCoreKeeps(IBAN_B, "USD", "10.00");
         api = RestClient.builder().baseUrl("http://localhost:" + port).defaultHeader("X-Request-ID", REQUEST_ID)
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + TestTokens.tokenFor(TestProviders.PROVIDER_A))
+                .defaultHeader(TestProviders.CERTIFICATE_HEADER,
+                        TestProviders.certificateHeader(TestProviders.PROVIDER_A))
                 .build();
     }
 

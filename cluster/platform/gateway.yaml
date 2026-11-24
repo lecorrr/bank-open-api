@@ -1,5 +1,6 @@
-# The bank's entry point. Traefik serves it: a listener's port must be one of Traefik's entry points, and 8000 is
-# "web", which k3d publishes on localhost:8480. Only routes in the bank namespace may attach.
+# The bank's entry point. Traefik serves it: a listener's port must be one of Traefik's entry points, and 8443 is
+# "websecure", which k3d publishes on localhost:8443. Its certificate comes from the bank's test CA
+# (scripts/cluster-up.sh); edge.yaml sets the TLS options. Only routes in the bank namespace may attach.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -8,9 +9,14 @@ metadata:
 spec:
   gatewayClassName: traefik
   listeners:
-    - name: web
-      protocol: HTTP
-      port: 8000
+    - name: websecure
+      protocol: HTTPS
+      port: 8443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: bank-gateway-tls
       allowedRoutes:
         namespaces:
           from: Same

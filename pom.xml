@@ -13,7 +13,7 @@
 
     <groupId>dev.tkachuk</groupId>
     <artifactId>bank-open-api</artifactId>
-    <version>0.2.1</version>
+    <version>0.3.0</version>
     <name>bank-open-api</name>
     <description>Open banking API of the bank for licensed providers, in front of bank-core</description>
 
@@ -57,7 +57,13 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- RestClient.Builder for calls to bank-core. In Spring Boot 4 it is its own starter. -->
+        <!-- Providers' access tokens: Keycloak's JWTs checked with Spring Security's resource server (Nimbus). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
+        </dependency>
+        <!-- RestClient.Builder for calls to bank-core, RestTemplateBuilder for Keycloak's keys. In Spring Boot 4 it is
+             its own starter. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-restclient</artifactId>
@@ -96,6 +102,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- jwt() for MockMvc: requests with a provider's token without signing one. -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-resource-server-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

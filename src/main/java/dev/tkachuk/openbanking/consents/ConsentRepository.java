@@ -28,12 +28,13 @@ class ConsentRepository {
 
     void insert(Consent consent) {
         jdbc.sql("""
-                INSERT INTO consent (id, status, recurring, valid_to, frequency_per_day, tpp_redirect_uri,
-                                     created_at, status_changed_at)
-                VALUES (:id, :status, :recurring, :validTo, :frequencyPerDay, :tppRedirectUri,
-                        :createdAt, :statusChangedAt)
+                INSERT INTO consent (id, provider_id, status, recurring, valid_to, frequency_per_day,
+                                     tpp_redirect_uri, created_at, status_changed_at)
+                VALUES (:id, :providerId, :status, :recurring, :validTo, :frequencyPerDay,
+                        :tppRedirectUri, :createdAt, :statusChangedAt)
                 """)
                 .param("id", consent.id())
+                .param("providerId", consent.providerId())
                 .param("status", consent.storedStatus().code())
                 .param("recurring", consent.recurring())
                 .param("validTo", consent.validTo())
@@ -63,7 +64,8 @@ class ConsentRepository {
     Optional<Consent> findById(UUID id) {
         // The consent first: its accounts were inserted in the same transaction, so once it is there they are too.
         return jdbc.sql("""
-                SELECT status, recurring, valid_to, frequency_per_day, tpp_redirect_uri, created_at, status_changed_at
+                SELECT provider_id, status, recurring, valid_to, frequency_per_day, tpp_redirect_uri, created_at,
+                       status_changed_at
                 FROM consent
                 WHERE id = :id
                 """)
@@ -133,6 +135,7 @@ class ConsentRepository {
     private static ConsentRow row(ResultSet rs, int rowNum) throws SQLException {
         String redirectUri = rs.getString("tpp_redirect_uri");
         return new ConsentRow(
+                rs.getString("provider_id"),
                 ConsentStatus.fromCode(rs.getString("status")),
                 rs.getBoolean("recurring"),
                 rs.getObject("valid_to", LocalDate.class),
@@ -147,11 +150,12 @@ class ConsentRepository {
         return instant.atOffset(ZoneOffset.UTC);
     }
 
-    private record ConsentRow(ConsentStatus status, boolean recurring, LocalDate validTo, int frequencyPerDay,
-            @Nullable URI tppRedirectUri, Instant createdAt, Instant statusChangedAt) {
+    private record ConsentRow(@Nullable String providerId, ConsentStatus status, boolean recurring,
+            LocalDate validTo, int frequencyPerDay, @Nullable URI tppRedirectUri, Instant createdAt,
+            Instant statusChangedAt) {
 
         Consent toConsent(UUID id, List<ConsentAccount> accounts) {
-            return new Consent(id, status, accounts, recurring, validTo, frequencyPerDay, tppRedirectUri,
+            return new Consent(id, providerId, status, accounts, recurring, validTo, frequencyPerDay, tppRedirectUri,
                     createdAt, statusChangedAt);
         }
     }

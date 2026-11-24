@@ -25,6 +25,7 @@ final class Consent {
     static final int MAX_FREQUENCY_PER_DAY = 4;
 
     private final UUID id;
+    private final @Nullable String providerId;
     private final List<ConsentAccount> accounts;
     private final boolean recurring;
     private final LocalDate validTo;
@@ -34,12 +35,15 @@ final class Consent {
     private ConsentStatus status;
     private Instant statusChangedAt;
 
-    Consent(UUID id, ConsentStatus status, List<ConsentAccount> accounts, boolean recurring, LocalDate validTo,
-            int frequencyPerDay, @Nullable URI tppRedirectUri, Instant createdAt, Instant statusChangedAt) {
+    /** providerId is null only for consents made before providers signed in (0.2.x); no provider owns those. */
+    Consent(UUID id, @Nullable String providerId, ConsentStatus status, List<ConsentAccount> accounts,
+            boolean recurring, LocalDate validTo, int frequencyPerDay, @Nullable URI tppRedirectUri, Instant createdAt,
+            Instant statusChangedAt) {
         if (status == ConsentStatus.EXPIRED) {
             throw new IllegalArgumentException("Expiry follows from validTo and is never stored");
         }
         this.id = Objects.requireNonNull(id, "id");
+        this.providerId = providerId;
         this.status = status;
         this.accounts = List.copyOf(accounts);
         this.recurring = recurring;
@@ -54,8 +58,9 @@ final class Consent {
      * Checks a provider's request against the rules and makes a received consent of it. A validTo later than the
      * bank allows is cut back to its last allowed day, as the contract foresees.
      */
-    static Consent create(UUID id, NewConsent request, LocalDate today, int maxValidityDays,
+    static Consent create(UUID id, String providerId, NewConsent request, LocalDate today, int maxValidityDays,
             Supplier<UUID> newResourceId, Instant now) {
+        Objects.requireNonNull(providerId, "providerId");
         if (request.accounts().isEmpty()) {
             throw formatError("access.payments must name at least one account");
         }
@@ -88,8 +93,13 @@ final class Consent {
             }
             accounts.add(new ConsentAccount(newResourceId.get(), iban, account.currency(), account.rights()));
         }
-        return new Consent(id, ConsentStatus.RECEIVED, accounts, request.recurring(), validTo,
+        return new Consent(id, providerId, ConsentStatus.RECEIVED, accounts, request.recurring(), validTo,
                 request.frequencyPerDay(), request.tppRedirectUri(), now, now);
+    }
+
+    /** Whether the provider asked for this consent; for any other provider it does not exist. */
+    boolean belongsTo(String provider) {
+        return provider.equals(providerId);
     }
 
     /** The status as the provider sees it on the given day: received and valid consents expire after validTo. */
@@ -167,6 +177,10 @@ final class Consent {
 
     UUID id() {
         return id;
+    }
+
+    @Nullable String providerId() {
+        return providerId;
     }
 
     /** The status as stored, without expiry; statusOn is what the provider sees. */

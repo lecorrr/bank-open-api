@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -14,6 +15,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.tkachuk.openbanking.FixedClock;
+import dev.tkachuk.openbanking.TestProviders;
+import dev.tkachuk.openbanking.security.SecurityConfig;
 import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -29,15 +33,21 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+// With the API's security chain; see AccountsControllerTest for how requests get their provider token.
 @WebMvcTest(ConsentsController.class)
+@Import({SecurityConfig.class, FixedClock.class})
+@MockitoBean(types = JwtDecoder.class)
 class ConsentsControllerTest {
 
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
+    private static final String PROVIDER = TestProviders.PROVIDER_A;
     private static final UUID CONSENT_ID = UUID.fromString("3f2a6c1e-8b4d-4e7f-9a12-6c5d4b3a2f10");
     private static final UUID RESOURCE_ID = UUID.fromString("0f1b8a4e-3c55-4d6a-9a43-1c2e5b7d9f01");
     private static final String IBAN = "UA843999990000000000000000001";
@@ -58,7 +68,7 @@ class ConsentsControllerTest {
     @Test
     void shouldCreateConsentAndPointToItsStatus() throws Exception {
         Consent consent = consent(ConsentStatus.RECEIVED);
-        when(consents.create(any())).thenReturn(consent);
+        when(consents.create(any(), eq(PROVIDER))).thenReturn(consent);
         when(consents.statusOf(consent)).thenReturn(ConsentStatus.RECEIVED);
 
         mockMvc.perform(create(BODY).header("TPP-Redirect-URI", "https://tpp.example/consents/done"))
@@ -72,7 +82,7 @@ class ConsentsControllerTest {
                 .andExpect(jsonPath("$._links.status.href").value(CONSENT_PATH + "/status"));
 
         ArgumentCaptor<NewConsent> request = ArgumentCaptor.forClass(NewConsent.class);
-        verify(consents).create(request.capture());
+        verify(consents).create(request.capture(), eq(PROVIDER));
         assertThat(request.getValue().accounts()).containsExactly(new NewConsent.RequestedAccount(IBAN, "UAH",
                 Set.of(AccessRight.ACCOUNT_DETAILS, AccessRight.BALANCES)));
         assertThat(request.getValue().validTo()).isEqualTo(VALID_TO);
@@ -82,7 +92,7 @@ class ConsentsControllerTest {
     @Test
     void shouldRefuseConsentRequestWithoutPsuIpAddress() throws Exception {
         mockMvc.perform(post("/v2/consents/account-access").header("X-Request-ID", REQUEST_ID)
-                        .contentType(MediaType.APPLICATION_JSON).content(BODY))
+                        .contentType(MediaType.APPLICATION_JSON).content(BODY).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("FORMAT_ERROR"))
                 .andExpect(jsonPath("$.detail").value("Header PSU-IP-Address is missing"));
@@ -146,10 +156,10 @@ class ConsentsControllerTest {
     @Test
     void shouldShowValidConsentWithLinksToTheData() throws Exception {
         Consent consent = consent(ConsentStatus.VALID);
-        when(consents.get(CONSENT_ID.toString())).thenReturn(consent);
+        when(consents.get(CONSENT_ID.toString(), PROVIDER)).thenReturn(consent);
         when(consents.statusOf(consent)).thenReturn(ConsentStatus.VALID);
 
-        mockMvc.perform(get(CONSENT_PATH).header("X-Request-ID", REQUEST_ID))
+        mockMvc.perform(get(CONSENT_PATH).header("X-Request-ID", REQUEST_ID).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.consentStatus").value("valid"))
                 .andExpect(jsonPath("$.consentType").value("detailed"))
@@ -169,10 +179,10 @@ class ConsentsControllerTest {
     @Test
     void shouldShowNoLinksBeforeTheConsentIsValid() throws Exception {
         Consent consent = consent(ConsentStatus.RECEIVED);
-        when(consents.get(CONSENT_ID.toString())).thenReturn(consent);
+        when(consents.get(CONSENT_ID.toString(), PROVIDER)).thenReturn(consent);
         when(consents.statusOf(consent)).thenReturn(ConsentStatus.RECEIVED);
 
-        mockMvc.perform(get(CONSENT_PATH).header("X-Request-ID", REQUEST_ID))
+        mockMvc.perform(get(CONSENT_PATH).header("X-Request-ID", REQUEST_ID).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.consentStatus").value("received"))
                 .andExpect(jsonPath("$.access.payments[0]._links").doesNotExist())
@@ -182,30 +192,32 @@ class ConsentsControllerTest {
     @Test
     void shouldAnswerConsentStatus() throws Exception {
         Consent consent = consent(ConsentStatus.VALID);
-        when(consents.get(CONSENT_ID.toString())).thenReturn(consent);
+        when(consents.get(CONSENT_ID.toString(), PROVIDER)).thenReturn(consent);
         when(consents.statusOf(consent)).thenReturn(ConsentStatus.EXPIRED);
 
-        mockMvc.perform(get(CONSENT_PATH + "/status").header("X-Request-ID", REQUEST_ID))
+        mockMvc.perform(get(CONSENT_PATH + "/status").header("X-Request-ID", REQUEST_ID)
+                        .with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.consentStatus").value("expired"));
     }
 
     @Test
     void shouldDeleteConsent() throws Exception {
-        mockMvc.perform(delete(CONSENT_PATH).header("X-Request-ID", REQUEST_ID))
+        mockMvc.perform(delete(CONSENT_PATH).header("X-Request-ID", REQUEST_ID).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isNoContent());
 
-        verify(consents).terminate(CONSENT_ID.toString());
+        verify(consents).terminate(CONSENT_ID.toString(), PROVIDER);
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"payment", "funds-confirmation"})
     void shouldAnswerOtherConsentCategoryAsUnknown(String category) throws Exception {
-        mockMvc.perform(delete("/v2/consents/" + category + "/" + CONSENT_ID).header("X-Request-ID", REQUEST_ID))
+        mockMvc.perform(delete("/v2/consents/" + category + "/" + CONSENT_ID).header("X-Request-ID", REQUEST_ID)
+                        .with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("CONSENT_UNKNOWN"));
         mockMvc.perform(get("/v2/consents/" + category + "/" + CONSENT_ID + "/status")
-                        .header("X-Request-ID", REQUEST_ID))
+                        .header("X-Request-ID", REQUEST_ID).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("CONSENT_UNKNOWN"));
 
@@ -214,12 +226,13 @@ class ConsentsControllerTest {
 
     private static MockHttpServletRequestBuilder create(String body) {
         return post("/v2/consents/account-access").header("X-Request-ID", REQUEST_ID)
-                .header("PSU-IP-Address", "192.0.2.10").contentType(MediaType.APPLICATION_JSON).content(body);
+                .header("PSU-IP-Address", "192.0.2.10").contentType(MediaType.APPLICATION_JSON).content(body)
+                .with(TestProviders.provider(PROVIDER));
     }
 
     private static Consent consent(ConsentStatus status) {
         ConsentAccount account = new ConsentAccount(RESOURCE_ID, IBAN, null, Set.of(AccessRight.BALANCES));
         Instant created = Instant.parse("2026-11-22T08:00:00Z");
-        return new Consent(CONSENT_ID, status, List.of(account), true, VALID_TO, 4, null, created, created);
+        return new Consent(CONSENT_ID, PROVIDER, status, List.of(account), true, VALID_TO, 4, null, created, created);
     }
 }

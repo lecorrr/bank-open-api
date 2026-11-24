@@ -29,13 +29,16 @@ class LayeringTest {
     private static final Map<String, Set<String>> MAY_DEPEND_ON = Map.of(
             "common", Set.of(),
             "bankcore", Set.of("common"),
-            "consents", Set.of("common", "api"),
-            "accounts", Set.of("common", "bankcore", "consents", "api"));
+            "security", Set.of("common"),
+            "consents", Set.of("common", "api", "security"),
+            "accounts", Set.of("common", "bankcore", "consents", "api", "security"));
 
-    // Which package alone may use a kind of outside access: HTTP calls to bank-core, and SQL.
+    // Which package alone may use a kind of outside access or framework: HTTP calls to bank-core, SQL, and
+    // Spring Security, which the other packages see only as AuthenticatedProvider.
     private static final Map<String, String> ONLY_PACKAGE_USING = Map.of(
             "org.springframework.web.client.", "bankcore",
-            "org.springframework.jdbc.", "consents");
+            "org.springframework.jdbc.", "consents",
+            "org.springframework.security.", "security");
 
     private static List<SourceFile> sources;
 
@@ -80,7 +83,7 @@ class LayeringTest {
     }
 
     @Test
-    void shouldKeepHttpClientsAndSqlInTheirPackages() {
+    void shouldKeepHttpClientsSqlAndSecurityInTheirPackages() {
         List<String> violations = new ArrayList<>();
         for (SourceFile source : sources) {
             for (String imported : source.imports()) {
@@ -92,7 +95,7 @@ class LayeringTest {
             }
         }
 
-        assertThat(violations).as("HTTP clients outside bankcore or SQL outside consents").isEmpty();
+        assertThat(violations).as("HTTP clients, SQL or Spring Security outside their packages").isEmpty();
     }
 
     private static String moduleOf(String imported) {

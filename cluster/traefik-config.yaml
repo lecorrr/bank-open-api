@@ -12,3 +12,8 @@ spec:
         enabled: true
     gateway:
       enabled: false
+    # A header whose name only looks like another (X_Forwarded_Tls_Client_Cert, X.Forwarded...) is dropped, so
+    # a client cannot slip a certificate header past the entry point to a service that reads names loosely.
+    additionalArguments:
+      - --entryPoints.web.http.aliasHeadersStrategy=delete
+      - --entryPoints.websecure.http.aliasHeadersStrategy=delete

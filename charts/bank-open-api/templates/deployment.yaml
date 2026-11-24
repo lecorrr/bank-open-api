@@ -35,6 +35,10 @@ spec:
           env:
             - name: BANK_CORE_URL
               value: {{ .Values.bankCore.url | quote }}
+            - name: PROVIDER_TOKENS_ISSUER
+              value: {{ .Values.providerTokens.issuer | quote }}
+            - name: PROVIDER_TOKENS_JWK_SET_URI
+              value: {{ .Values.providerTokens.jwkSetUri | quote }}
             - name: DB_URL
               value: {{ .Values.database.url | quote }}
             - name: DB_USER

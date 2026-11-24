@@ -17,12 +17,20 @@ database:
   # Secret with the keys username and password; scripts/cluster-up.sh creates it.
   existingSecret: bank-open-api-db
 
-# The route from the bank's Gateway (made by scripts/cluster-up.sh) to this service.
+# Providers' tokens come from Keycloak's realm bank. The issuer is Keycloak's public address, as every token names
+# it; the signing keys are read from Keycloak inside the cluster.
+providerTokens:
+  issuer: https://localhost:8443/realms/bank
+  jwkSetUri: http://keycloak:8080/realms/bank/protocol/openid-connect/certs
+
+# The route from the bank's Gateway (made by scripts/cluster-up.sh) to this service, over HTTPS only.
 route:
   enabled: true
   gateway: bank-gateway
-  listener: web
+  listener: websecure
   pathPrefix: /v2
+  # Traefik's middleware that passes the provider's client certificate on (cluster/platform/edge.yaml).
+  clientCertificateMiddleware: pass-client-cert
 
 # The JVM takes 60 % of the limit for its heap (see the Dockerfile); the rest is metaspace and threads.
 resources:

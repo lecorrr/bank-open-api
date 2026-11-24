@@ -16,6 +16,7 @@ import dev.tkachuk.openbanking.api.model.LinksConsents;
 import dev.tkachuk.openbanking.api.model.LinksGetConsent;
 import dev.tkachuk.openbanking.common.error.ApiException;
 import dev.tkachuk.openbanking.common.error.ErrorCode;
+import dev.tkachuk.openbanking.security.AuthenticatedProvider;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,7 +25,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
-/** The contract's consent endpoints: create, read, status and delete. */
+/** The contract's consent endpoints: create, read, status and delete, each for the calling provider's consents. */
 @RestController
 class ConsentsController implements ConsentsApi {
 
@@ -33,9 +34,11 @@ class ConsentsController implements ConsentsApi {
     private static final String ACCOUNTS = "/v2/accounts";
 
     private final ConsentService consents;
+    private final AuthenticatedProvider provider;
 
-    ConsentsController(ConsentService consents) {
+    ConsentsController(ConsentService consents, AuthenticatedProvider provider) {
         this.consents = consents;
+        this.provider = provider;
     }
 
     @Override
@@ -44,7 +47,7 @@ class ConsentsController implements ConsentsApi {
         if (body == null) {
             throw new ApiException(ErrorCode.FORMAT_ERROR, "The request body is missing");
         }
-        Consent consent = consents.create(ConsentRequests.from(body, tppRedirectUri));
+        Consent consent = consents.create(ConsentRequests.from(body, tppRedirectUri), provider.id());
         String self = CONSENTS + consent.id();
         LinksConsents links = new LinksConsents().self(new HrefType(self)).status(new HrefType(self + "/status"));
         AccountAccessConsentResponse201 response =
@@ -56,7 +59,7 @@ class ConsentsController implements ConsentsApi {
     @Override
     public ResponseEntity<AccountAccessConsentInformationResponse200Json> getAccountAccessConsentInformation(
             String consentId, UUID requestId) {
-        Consent consent = consents.get(consentId);
+        Consent consent = consents.get(consentId, provider.id());
         boolean valid = consents.statusOf(consent) == ConsentStatus.VALID;
         List<AccountAccessRightsExtended> payments = new ArrayList<>();
         for (ConsentAccount account : consent.accounts()) {
@@ -75,13 +78,13 @@ class ConsentsController implements ConsentsApi {
     public ResponseEntity<ConsentStatusResponse200> getConsentStatus(String consentId, String consentCategory,
             UUID requestId) {
         requireAccountAccess(consentCategory);
-        return ResponseEntity.ok(new ConsentStatusResponse200(contractStatus(consents.get(consentId))));
+        return ResponseEntity.ok(new ConsentStatusResponse200(contractStatus(consents.get(consentId, provider.id()))));
     }
 
     @Override
     public ResponseEntity<Void> deleteConsent(String consentCategory, String consentId, UUID requestId) {
         requireAccountAccess(consentCategory);
-        consents.terminate(consentId);
+        consents.terminate(consentId, provider.id());
         return ResponseEntity.noContent().build();
     }
 

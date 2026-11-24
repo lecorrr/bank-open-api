@@ -1,0 +1,11 @@
+# The realm "bank", imported when Keycloak starts and finds no realm of that name. A later change to the file
+# reaches an existing cluster only through the admin console, or by deleting the realm there (docs/cluster.md).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-realm
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+data:
+  bank-realm.json: |-
+{{ .Files.Get "realm/bank-realm.json" | indent 4 }}

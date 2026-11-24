@@ -1,5 +1,6 @@
 // CI for bank-open-api: compile, run every test, publish reports, build the image. With the k3d cluster
-// (DEPLOY_TO_K3D=true, see docs/cluster.md) it deploys the image and takes a consent through the API via Traefik.
+// (DEPLOY_TO_K3D=true, see docs/cluster.md) it deploys the image and, signed in as the test provider, takes a
+// consent through the API via Traefik.
 pipeline {
     agent any
 
@@ -68,9 +69,21 @@ pipeline {
                 environment name: 'DEPLOY_TO_K3D', value: 'true'
             }
             steps {
-                // The way a provider comes in: k3d's load balancer, Traefik, the Gateway, the route. Jenkins is on
-                // k3d's Docker network, where the load balancer listens on port 80.
-                sh 'bash scripts/smoke-test.sh http://k3d-bank-serverlb'
+                // The way a provider comes in: k3d's load balancer, Traefik's mutual TLS, the Gateway, the route.
+                // Jenkins is on k3d's Docker network, where the load balancer listens on port 443. The test
+                // provider's key and certificate and the bank's test CA come from the cluster's Secrets into a
+                // folder only this build sees.
+                sh '''
+                    export PKI_DIR="$(mktemp -d)"
+                    trap 'rm -rf "$PKI_DIR"' EXIT
+                    kubectl --namespace bank get secret provider-ca -o jsonpath='{.data.ca\\.crt}' \
+                        | base64 -d > "$PKI_DIR/ca.crt"
+                    kubectl --namespace bank get secret smoke-test-provider -o jsonpath='{.data.tls\\.crt}' \
+                        | base64 -d > "$PKI_DIR/smoke-test.crt"
+                    kubectl --namespace bank get secret smoke-test-provider -o jsonpath='{.data.tls\\.key}' \
+                        | base64 -d > "$PKI_DIR/smoke-test.key"
+                    bash scripts/smoke-test.sh https://k3d-bank-serverlb
+                '''
             }
         }
     }

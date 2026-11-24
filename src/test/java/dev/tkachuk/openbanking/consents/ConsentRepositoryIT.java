@@ -26,6 +26,7 @@ class ConsentRepositoryIT {
     private static final UUID RESOURCE_B = UUID.fromString("5a7c9e1f-2b4d-4f68-8a0c-3e5f7a9b1d02");
     private static final String IBAN_A = "UA843999990000000000000000001";
     private static final String IBAN_B = "UA033999990000000000000000004";
+    private static final String PROVIDER = "provider-a";
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 22);
     // timestamptz keeps microseconds, which is why the application's clock ticks in microseconds.
     private static final Instant CREATED = Instant.parse("2026-11-22T08:00:00.123456Z");
@@ -44,12 +45,13 @@ class ConsentRepositoryIT {
         List<ConsentAccount> accounts = List.of(
                 new ConsentAccount(RESOURCE_B, IBAN_B, "USD", Set.of(AccessRight.BALANCES)),
                 new ConsentAccount(RESOURCE_A, IBAN_A, null, both));
-        Consent consent = new Consent(CONSENT_ID, ConsentStatus.RECEIVED, accounts, true, TODAY.plusDays(90), 3,
-                URI.create("https://tpp.example/consents/done"), CREATED, CREATED);
+        Consent consent = new Consent(CONSENT_ID, PROVIDER, ConsentStatus.RECEIVED, accounts, true,
+                TODAY.plusDays(90), 3, URI.create("https://tpp.example/consents/done"), CREATED, CREATED);
 
         repository.insert(consent);
 
         Consent read = repository.findById(CONSENT_ID).orElseThrow();
+        assertThat(read.providerId()).isEqualTo(PROVIDER);
         assertThat(read.storedStatus()).isEqualTo(ConsentStatus.RECEIVED);
         assertThat(read.accounts()).containsExactlyElementsOf(accounts);
         assertThat(read.recurring()).isTrue();
@@ -65,6 +67,15 @@ class ConsentRepositoryIT {
         repository.insert(consent(ConsentStatus.RECEIVED));
 
         assertThat(repository.findById(CONSENT_ID).orElseThrow().tppRedirectUri()).isNull();
+    }
+
+    // A consent from before providers signed in has no provider; V2 left the column empty for those.
+    @Test
+    void shouldReadBackConsentWithoutProvider() {
+        repository.insert(new Consent(CONSENT_ID, null, ConsentStatus.VALID, List.of(), true, TODAY.plusDays(30), 4,
+                null, CREATED, CREATED));
+
+        assertThat(repository.findById(CONSENT_ID).orElseThrow().providerId()).isNull();
     }
 
     @Test
@@ -122,6 +133,7 @@ class ConsentRepositoryIT {
 
     private static Consent consent(ConsentStatus status) {
         ConsentAccount account = new ConsentAccount(RESOURCE_A, IBAN_A, "UAH", Set.of(AccessRight.BALANCES));
-        return new Consent(CONSENT_ID, status, List.of(account), true, TODAY.plusDays(30), 4, null, CREATED, CREATED);
+        return new Consent(CONSENT_ID, PROVIDER, status, List.of(account), true, TODAY.plusDays(30), 4, null, CREATED,
+                CREATED);
     }
 }

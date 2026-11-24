@@ -1,0 +1,43 @@
+# Traefik's TLS for the bank's Gateway. Traefik ends every connection's TLS; providers come with a client
+# certificate from the bank's test CA (mutual TLS), customers' browsers without one.
+#
+# The TLS options named "default" apply to every HTTPS router, and the Gateway's routers take no others. So the
+# client certificate is checked when one is sent (VerifyClientCertIfGiven), and the services decide where one is
+# required: Keycloak to bind a token to it, bank-open-api on every call.
+apiVersion: traefik.io/v1alpha1
+kind: TLSOption
+metadata:
+  name: default
+  namespace: bank
+spec:
+  minVersion: VersionTLS12
+  # FAPI 2.0's cipher suites for TLS 1.2; TLS 1.3 has only strong ones, which Go does not let anyone choose.
+  cipherSuites:
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  clientAuth:
+    # The CA certificate under ca.crt; scripts/cluster-up.sh creates the Secret.
+    secretNames:
+      - provider-ca
+    clientAuthType: VerifyClientCertIfGiven
+---
+# The gateway's certificate also for clients that send no server name, such as curl https://127.0.0.1:8443.
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: bank
+spec:
+  defaultCertificate:
+    secretName: bank-gateway-tls
+---
+# Passes the client certificate of the TLS connection to the service in X-Forwarded-Tls-Client-Cert: the PEM body
+# without line breaks. The entry point has already removed any such header the client sent itself.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: pass-client-cert
+  namespace: bank
+spec:
+  passTLSClientCert:
+    pem: true

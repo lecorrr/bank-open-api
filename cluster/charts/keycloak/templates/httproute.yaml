@@ -1,0 +1,30 @@
+{{- if .Values.route.enabled }}
+# Providers and customers reach Keycloak only through the bank's Gateway, over HTTPS.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway }}
+      sectionName: {{ .Values.route.listener }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /realms/bank
+        - path:
+            type: PathPrefix
+            value: /resources
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: {{ .Values.route.clientCertificateMiddleware }}
+      backendRefs:
+        - name: {{ .Release.Name }}
+          port: 8080
+{{- end }}

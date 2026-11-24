@@ -35,6 +35,8 @@ class ConsentServiceTest {
     private static final UUID CONSENT_ID = UUID.fromString("3f2a6c1e-8b4d-4e7f-9a12-6c5d4b3a2f10");
     private static final UUID RESOURCE_ID = UUID.fromString("0f1b8a4e-3c55-4d6a-9a43-1c2e5b7d9f01");
     private static final String IBAN = "UA843999990000000000000000001";
+    private static final String PROVIDER = "provider-a";
+    private static final String OTHER_PROVIDER = "provider-b";
     private static final Instant NOW = Instant.parse("2026-11-22T10:00:00Z");
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 22);
 
@@ -53,9 +55,10 @@ class ConsentServiceTest {
     void shouldStoreReceivedConsent() {
         Consent consent = service.create(new NewConsent(
                 List.of(new NewConsent.RequestedAccount(IBAN, "UAH", Set.of(AccessRight.BALANCES))),
-                true, TODAY.plusDays(90), 4, null));
+                true, TODAY.plusDays(90), 4, null), PROVIDER);
 
         verify(repository).insert(consent);
+        assertThat(consent.belongsTo(PROVIDER)).isTrue();
         assertThat(consent.statusOn(TODAY)).isEqualTo(ConsentStatus.RECEIVED);
         assertThat(consent.createdAt()).isEqualTo(NOW);
     }
@@ -64,7 +67,7 @@ class ConsentServiceTest {
     void shouldStoreNothingWhenRequestBreaksARule() {
         NewConsent noAccounts = new NewConsent(List.of(), true, TODAY.plusDays(90), 4, null);
 
-        assertCode(() -> service.create(noAccounts), ErrorCode.FORMAT_ERROR);
+        assertCode(() -> service.create(noAccounts, PROVIDER), ErrorCode.FORMAT_ERROR);
         verifyNoInteractions(repository);
     }
 
@@ -72,8 +75,8 @@ class ConsentServiceTest {
     @ParameterizedTest
     @ValueSource(strings = {"not-a-consent", "3F2A6C1E-8B4D-4E7F-9A12-6C5D4B3A2F10", ""})
     void shouldAnswerMalformedConsentIdAsUnknown(String consentId) {
-        assertCode(() -> service.get(consentId), ErrorCode.CONSENT_UNKNOWN);
-        assertCode(() -> service.accountsToList(consentId, true), ErrorCode.CONSENT_ID_UNKNOWN);
+        assertCode(() -> service.get(consentId, PROVIDER), ErrorCode.CONSENT_UNKNOWN);
+        assertCode(() -> service.accountsToList(consentId, PROVIDER, true), ErrorCode.CONSENT_ID_UNKNOWN);
         verifyNoInteractions(repository);
     }
 
@@ -81,14 +84,30 @@ class ConsentServiceTest {
     void shouldAnswerConsentInPathThatDoesNotExistWith403() {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.empty());
 
-        assertCode(() -> service.get(CONSENT_ID.toString()), ErrorCode.CONSENT_UNKNOWN);
+        assertCode(() -> service.get(CONSENT_ID.toString(), PROVIDER), ErrorCode.CONSENT_UNKNOWN);
     }
 
     @Test
     void shouldAnswerConsentIdHeaderThatDoesNotExistWith400() {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.empty());
 
-        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), false), ErrorCode.CONSENT_ID_UNKNOWN);
+        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), PROVIDER, false),
+                ErrorCode.CONSENT_ID_UNKNOWN);
+    }
+
+    // Another provider's consent answers exactly as one that does not exist, in a path and in Consent-ID.
+    @Test
+    void shouldAnswerAnotherProvidersConsentAsUnknown() {
+        when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
+
+        assertCode(() -> service.get(CONSENT_ID.toString(), OTHER_PROVIDER), ErrorCode.CONSENT_UNKNOWN);
+        assertCode(() -> service.terminate(CONSENT_ID.toString(), OTHER_PROVIDER), ErrorCode.CONSENT_UNKNOWN);
+        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), OTHER_PROVIDER, true),
+                ErrorCode.CONSENT_ID_UNKNOWN);
+        assertCode(() -> service.accountToRead(CONSENT_ID.toString(), OTHER_PROVIDER, RESOURCE_ID.toString(),
+                AccessRight.BALANCES, true), ErrorCode.CONSENT_ID_UNKNOWN);
+        verify(repository, never()).updateStatus(any(), any());
+        verify(repository, never()).countRead(any(), anyString(), any(), anyInt());
     }
 
     @Test
@@ -97,7 +116,7 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
         when(repository.countRead(CONSENT_ID, "accounts", TODAY, 2)).thenReturn(true);
 
-        assertThat(service.accountsToList(CONSENT_ID.toString(), false)).isEqualTo(consent.accounts());
+        assertThat(service.accountsToList(CONSENT_ID.toString(), PROVIDER, false)).isEqualTo(consent.accounts());
     }
 
     @Test
@@ -105,8 +124,8 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
         when(repository.countRead(CONSENT_ID, "balances:" + RESOURCE_ID, TODAY, 4)).thenReturn(true);
 
-        ConsentAccount account =
-                service.accountToRead(CONSENT_ID.toString(), RESOURCE_ID.toString(), AccessRight.BALANCES, false);
+        ConsentAccount account = service.accountToRead(CONSENT_ID.toString(), PROVIDER, RESOURCE_ID.toString(),
+                AccessRight.BALANCES, false);
 
         assertThat(account.iban()).isEqualTo(IBAN);
     }
@@ -116,14 +135,14 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 4)));
         when(repository.countRead(CONSENT_ID, "accounts", TODAY, 4)).thenReturn(false);
 
-        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), false), ErrorCode.ACCESS_EXCEEDED);
+        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), PROVIDER, false), ErrorCode.ACCESS_EXCEEDED);
     }
 
     @Test
     void shouldNotCountReadsTheCustomerStarts() {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.VALID, 1)));
 
-        service.accountsToList(CONSENT_ID.toString(), true);
+        service.accountsToList(CONSENT_ID.toString(), PROVIDER, true);
 
         verify(repository, never()).countRead(any(), anyString(), any(), anyInt());
     }
@@ -132,7 +151,7 @@ class ConsentServiceTest {
     void shouldNotCountRefusedReads() {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.RECEIVED, 4)));
 
-        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), false), ErrorCode.CONSENT_INVALID);
+        assertCode(() -> service.accountsToList(CONSENT_ID.toString(), PROVIDER, false), ErrorCode.CONSENT_INVALID);
         verify(repository, never()).countRead(any(), anyString(), any(), anyInt());
     }
 
@@ -142,7 +161,7 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
         when(repository.updateStatus(consent, ConsentStatus.VALID)).thenReturn(true);
 
-        service.terminate(CONSENT_ID.toString());
+        service.terminate(CONSENT_ID.toString(), PROVIDER);
 
         assertThat(consent.storedStatus()).isEqualTo(ConsentStatus.TERMINATED_BY_TPP);
         assertThat(consent.statusChangedAt()).isEqualTo(NOW);
@@ -154,14 +173,14 @@ class ConsentServiceTest {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent));
         when(repository.updateStatus(consent, ConsentStatus.RECEIVED)).thenReturn(false);
 
-        assertCode(() -> service.terminate(CONSENT_ID.toString()), ErrorCode.STATUS_INVALID);
+        assertCode(() -> service.terminate(CONSENT_ID.toString(), PROVIDER), ErrorCode.STATUS_INVALID);
     }
 
     @Test
     void shouldLeaveEndedConsentAsItIs() {
         when(repository.findById(CONSENT_ID)).thenReturn(Optional.of(consent(ConsentStatus.REJECTED, 4)));
 
-        service.terminate(CONSENT_ID.toString());
+        service.terminate(CONSENT_ID.toString(), PROVIDER);
 
         verify(repository, never()).updateStatus(any(), any());
     }
@@ -170,8 +189,8 @@ class ConsentServiceTest {
         ConsentAccount account = new ConsentAccount(RESOURCE_ID, IBAN, "UAH",
                 Set.of(AccessRight.ACCOUNT_DETAILS, AccessRight.BALANCES));
         Instant created = NOW.minusSeconds(3600);
-        return new Consent(CONSENT_ID, status, List.of(account), true, TODAY.plusDays(30), frequencyPerDay, null,
-                created, created);
+        return new Consent(CONSENT_ID, PROVIDER, status, List.of(account), true, TODAY.plusDays(30), frequencyPerDay,
+                null, created, created);
     }
 
     private static void assertCode(ThrowingCallable call, ErrorCode code) {

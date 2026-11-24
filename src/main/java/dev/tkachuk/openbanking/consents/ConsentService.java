@@ -12,7 +12,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Creates and ends consents, and decides whether a consent allows a read of account data. */
+/**
+ * Creates and ends consents, and decides whether a consent allows a read of account data. Each call names the
+ * provider the request comes from: a consent exists only for the provider that asked for it.
+ */
 @Service
 public class ConsentService {
 
@@ -34,26 +37,26 @@ public class ConsentService {
     // Package-private is enough: Spring 6 and later also apply @Transactional to non-public methods of
     // class-based proxies.
     @Transactional
-    Consent create(NewConsent request) {
-        Consent consent = Consent.create(UUID.randomUUID(), request, today(), properties.maxValidityDays(),
-                UUID::randomUUID, clock.instant());
+    Consent create(NewConsent request, String providerId) {
+        Consent consent = Consent.create(UUID.randomUUID(), providerId, request, today(),
+                properties.maxValidityDays(), UUID::randomUUID, clock.instant());
         repository.insert(consent);
-        log.info("Consent {} received, accounts: {}, valid to {}",
-                consent.id(), consent.accounts().size(), consent.validTo());
+        log.info("Consent {} received from provider {}, accounts: {}, valid to {}",
+                consent.id(), providerId, consent.accounts().size(), consent.validTo());
         return consent;
     }
 
     /** The consent a path names; an unknown one is answered with 403 CONSENT_UNKNOWN. */
-    Consent get(String consentId) {
-        return load(consentId, ErrorCode.CONSENT_UNKNOWN);
+    Consent get(String consentId, String providerId) {
+        return load(consentId, providerId, ErrorCode.CONSENT_UNKNOWN);
     }
 
     ConsentStatus statusOf(Consent consent) {
         return consent.statusOn(today());
     }
 
-    void terminate(String consentId) {
-        Consent consent = get(consentId);
+    void terminate(String consentId, String providerId) {
+        Consent consent = get(consentId, providerId);
         ConsentStatus statusAsRead = consent.storedStatus();
         if (!consent.terminateByTpp(today(), clock.instant())) {
             log.info("Consent {} had ended already, as {}", consent.id(), statusOf(consent).code());
@@ -67,17 +70,17 @@ public class ConsentService {
     }
 
     /** The accounts a provider may list under the consent in its Consent-ID header. */
-    public List<ConsentAccount> accountsToList(String consentId, boolean customerPresent) {
-        Consent consent = load(consentId, ErrorCode.CONSENT_ID_UNKNOWN);
+    public List<ConsentAccount> accountsToList(String consentId, String providerId, boolean customerPresent) {
+        Consent consent = load(consentId, providerId, ErrorCode.CONSENT_ID_UNKNOWN);
         List<ConsentAccount> accounts = consent.accountsToList(today());
         countRead(consent, ACCOUNT_LIST, customerPresent);
         return accounts;
     }
 
     /** The account behind a resource id, if the consent lets the provider read this data of it today. */
-    public ConsentAccount accountToRead(String consentId, String resourceId, AccessRight right,
+    public ConsentAccount accountToRead(String consentId, String providerId, String resourceId, AccessRight right,
             boolean customerPresent) {
-        Consent consent = load(consentId, ErrorCode.CONSENT_ID_UNKNOWN);
+        Consent consent = load(consentId, providerId, ErrorCode.CONSENT_ID_UNKNOWN);
         ConsentAccount account = consent.accountToRead(resourceId, right, today());
         countRead(consent, right.code() + ":" + account.resourceId(), customerPresent);
         return account;
@@ -92,12 +95,18 @@ public class ConsentService {
         }
     }
 
-    private Consent load(String consentId, ErrorCode whenUnknown) {
+    private Consent load(String consentId, String providerId, ErrorCode whenUnknown) {
         if (!UUID_TEXT.matcher(consentId).matches()) {
             throw new ApiException(whenUnknown, whenUnknown.text());
         }
-        return repository.findById(UUID.fromString(consentId))
+        Consent consent = repository.findById(UUID.fromString(consentId))
                 .orElseThrow(() -> new ApiException(whenUnknown, whenUnknown.text()));
+        if (!consent.belongsTo(providerId)) {
+            // Answered as unknown, so a provider cannot even learn that another provider's consent exists.
+            log.warn("Provider {} asked for consent {}, which is not its own", providerId, consent.id());
+            throw new ApiException(whenUnknown, whenUnknown.text());
+        }
+        return consent;
     }
 
     private LocalDate today() {

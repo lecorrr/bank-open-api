@@ -1,22 +1,26 @@
 # Architecture
 
-Version 0.2.1, step 2 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
-bank-core. This version brings the contract as code and consents: a provider reads account data only under a
-valid consent that names the account and the data.
+Version 0.3.0, step 3 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+bank-core. A provider reads account data only under a valid consent that names the account and the data, and from
+this version only as itself: with an access token from the bank's Keycloak, over mutual TLS with the client
+certificate the token is bound to, and only under its own consents.
 
 ## Packages
 
 | Package | Holds | May use |
 |---|---|---|
 | `api` | `ConsentsApi`, `AccountsApi` and the models, generated at build time from the contract | - |
-| `consents` | `Consent` and its rules, `ConsentService`, `ConsentRepository`, `ConsentRequests`, `ConsentsController` | `api`, `common` |
-| `accounts` | `AccountsController`: the account endpoints | `api`, `bankcore`, `consents`, `common` |
+| `security` | `SecurityConfig`, `ProviderTokenValidator`, `CertificateBindingFilter`, `ClientCertificates`, `SecurityRefusals`, `AuthenticatedProvider` | `common` |
+| `consents` | `Consent` and its rules, `ConsentService`, `ConsentRepository`, `ConsentRequests`, `ConsentsController` | `api`, `common`, `security` |
+| `accounts` | `AccountsController`: the account endpoints | `api`, `bankcore`, `consents`, `common`, `security` |
 | `bankcore` | `BankCoreClient`, its properties and errors: everything that knows bank-core's API | `common` |
 | `common` | `RequestIdFilter`, `ApiExceptionHandler`, `ErrorCode`, `ApiException`, `TimeConfig`, `StartupLogger` | nothing of ours |
 
 The contract's types stay in `api` and the controllers; bank-core's JSON stays in `bankcore`; SQL stays in
-`ConsentRepository`. `LayeringTest` fails the build when an import goes against the table, when a package has no
-line in it, when an HTTP client appears outside `bankcore` or SQL outside `consents`.
+`ConsentRepository`; Spring Security stays in `security`, and the controllers learn the provider from
+`AuthenticatedProvider`. `LayeringTest` fails the build when an import goes against the table, when a package has
+no line in it, when an HTTP client appears outside `bankcore`, SQL outside `consents` or Spring Security outside
+`security`.
 
 ## The contract
 
@@ -29,6 +33,45 @@ interfaces, so a path, header or field that disagrees with the contract does not
 `@Validated`, so Spring checks the bean validation rules of the models (required fields, patterns, minimums) before
 a controller runs, and the error names the field.
 
+## Providers and their tokens
+
+A provider is a client of Keycloak's realm `bank` with the scope `accounts`, and has a client certificate from the
+bank's CA (a test CA here, made by `scripts/cluster-up.sh`). One key pair serves both: the certificate for mutual
+TLS, its key for signing in.
+
+```
+provider                       Traefik (:8443)                     Keycloak, realm bank            bank-open-api
+   │ TLS with client certificate ──► checks it against the CA, puts it into
+   │                                 X-Forwarded-Tls-Client-Cert
+   │ POST /realms/bank/.../token: client credentials, client_assertion = JWT (PS256)
+   │ ───────────────────────────────────────────────────────────────► checks the JWT with the
+   │                                                                  provider's certificate; FAPI 2.0
+   │ ◄─────────────────────── access token: typ at+jwt, aud bank-open-api, scope accounts, azp,
+   │                           cnf.x5t#S256 = SHA-256 of the client certificate
+   │ GET /v2/... with the token, over TLS with the same certificate
+   │ ─────────────────────────────────────────────────────────────────────────────────────────────► security chain
+```
+
+Keycloak's client policy `fapi-2-for-providers` puts every client with the default scope `accounts` under the
+built-in profile `fapi-2-security-profile`: confidential clients, `private_key_jwt` or mutual TLS sign-in, PS256 or
+ES256 signatures, tokens bound to the client certificate, PKCE for the authorization code flow of step 4. The realm
+signs with a PS256 key only. The client scope `accounts` adds the audience `bank-open-api`, and the clients use
+the RFC 9068 token type `at+jwt`.
+
+In bank-open-api, `SecurityConfig` builds the chain each request to `/v2` passes:
+
+1. `RequestIdFilter`, ahead of the chain, so refused requests echo their `X-Request-ID` too.
+2. Spring Security's bearer token filter: the token's PS256 signature against Keycloak's keys (read from
+   `http://keycloak:8080/.../certs` and cached), then `ProviderTokenValidator`'s rules in order: type `at+jwt`,
+   issuer `https://localhost:8443/realms/bank`, audience `bank-open-api`, expiry (30 s of clock skew), a provider
+   in `azp`, and a `cnf.x5t#S256`.
+3. `CertificateBindingFilter`: the certificate in Traefik's header must be readable, valid today, and the one whose
+   thumbprint the token carries (RFC 8705). A stolen token is of no use without the provider's key.
+4. The scope: `/v2/**` needs `accounts`. Health, info and the contract are open; everything else is refused.
+
+Controllers then ask `AuthenticatedProvider` for the provider (the token's `azp`), and `ConsentService` treats
+another provider's consent exactly as one that does not exist.
+
 ## A consent's life
 
 | From | What happens | To |
@@ -39,6 +82,9 @@ a controller runs, and the error names the field.
 | `valid` | the customer withdraws it at the bank (step 4) | `revokedByPsu` |
 | `received`, `valid` | `DELETE /v2/consents/account-access/{id}` | `terminatedByTpp` |
 | `received`, `valid` | the day after `validTo` | `expired`: computed on every read, never stored |
+
+Every consent belongs to the provider that asked for it (`provider_id`). Consents made before 0.3.0 have none, and
+no provider sees them.
 
 What a provider may ask for, checked in `ConsentRequests` (what the bank offers) and `Consent` (the rules):
 
@@ -76,10 +122,17 @@ never a value the provider sent) or, for failures inside the bank, a message tha
 | `FORMAT_ERROR` | 400 | a header, parameter or body field breaks the contract or a consent rule |
 | `PARAMETER_NOT_SUPPORTED` | 400 | access beyond current accounts, an account not named by IBAN, rights the bank does not offer |
 | `CONSENT_TYPE_NOT_SUPPORTED` | 400 | a consent type other than `detailed` |
-| `CONSENT_UNKNOWN` | 400 | the `Consent-ID` header names no consent |
+| `CONSENT_UNKNOWN` | 400 | the `Consent-ID` header names no consent of this provider |
+| `TOKEN_UNKNOWN` | 401 | no access token, or one the bank cannot read: malformed, not signed by Keycloak's key |
+| `TOKEN_INVALID` | 401 | a token of the bank, but not for this: another type, issuer or audience, no provider, not bound to a certificate, or bound to another one |
+| `TOKEN_EXPIRED` | 401 | the token's expiry has passed |
+| `CERTIFICATE_MISSING` | 401 | the request came without the provider's client certificate |
+| `CERTIFICATE_INVALID` | 401 | the certificate in Traefik's header cannot be read, or is not valid yet |
+| `CERTIFICATE_EXPIRED` | 401 | the certificate's end date has passed |
+| `ROLE_INVALID` | 401 | the token lacks the scope `accounts`: the provider has no role for account information |
 | `CONSENT_INVALID` | 401 | the consent is not valid, or does not include this data |
 | `CONSENT_EXPIRED` | 401 | the consent's `validTo` has passed |
-| `CONSENT_UNKNOWN` | 403 | the path names no consent |
+| `CONSENT_UNKNOWN` | 403 | the path names no consent of this provider |
 | `RESOURCE_UNKNOWN` | 404 | the account is not part of the consent, or no API path matches |
 | `SERVICE_INVALID` | 405 | the method is not offered for the path |
 | `REQUESTED_FORMATS_INVALID` | 406 | `Accept` asks for something other than JSON |
@@ -87,15 +140,21 @@ never a value the provider sent) or, for failures inside the bank, a message tha
 | `FORMAT_ERROR` | 415 | the body is not JSON (Spring's status, the contract's code) |
 | `ACCESS_EXCEEDED` | 429 | today's reads without the customer are used up |
 | `INTERNAL_ERROR` | 500 | a bug; the provider quotes its `X-Request-ID` |
-| `SERVICE_UNAVAILABLE` | 503 | bank-core did not answer or refused; the provider may retry |
+| `SERVICE_UNAVAILABLE` | 503 | bank-core, or Keycloak's keys, did not answer; the provider may retry |
+
+Refusals of the token and the certificate come with RFC 6750's `WWW-Authenticate` header: `Bearer` without a
+token, `Bearer error="invalid_token"` or `error="insufficient_scope"` otherwise. They go through Spring MVC's
+exception handling (`SecurityRefusals`), so `ApiExceptionHandler` writes every error in the same form.
 
 ## One request, end to end
 
 ```
-provider ── GET localhost:8480/v2/accounts, X-Request-ID, Consent-ID
-  └─ k3d load balancer :80 ── Traefik, entry point web (:8000)
-       └─ Gateway bank-gateway, listener web ── HTTPRoute bank-open-api, path /v2
-            └─ Service bank-open-api:8090 ── pod: RequestIdFilter ── AccountsController
+provider ── GET https://localhost:8443/v2/accounts, client certificate, Authorization, X-Request-ID, Consent-ID
+  └─ k3d load balancer :443 ── Traefik, entry point websecure (:8443): TLS, client certificate checked
+       └─ Gateway bank-gateway, listener websecure ── HTTPRoute bank-open-api, path /v2,
+          middleware pass-client-cert
+            └─ Service bank-open-api:8090 ── pod: RequestIdFilter ── security chain ── AccountsController
+                 ├─ (keys, cached) Service keycloak:8080 ── /realms/bank/protocol/openid-connect/certs
                  ├─ ConsentService ── Service postgres:5432, database openbanking
                  └─ BankCoreClient ── Service bank-core:8080 ── GET /api/v1/accounts/{iban}
                       └─ bank-core ── Service postgres:5432, database bank
@@ -111,12 +170,14 @@ on as `X-Request-Id`, the header bank-core logs under, and the RestClient from S
 |---|---|---|
 | `kube-system` | Traefik with the Gateway API provider, CoreDNS, local-path storage | k3s, `cluster/traefik-config.yaml` |
 | `bank` | namespace with the "restricted" Pod Security Standard | `scripts/cluster-up.sh` |
-| `bank` | Gateway `bank-gateway`, PostgreSQL (`postgres`) with the databases `bank` and `openbanking`, their Secrets, account `jenkins-deployer` | `scripts/cluster-up.sh` |
+| `bank` | Gateway `bank-gateway` (HTTPS), Traefik's TLS options, default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
+| `bank` | PostgreSQL (`postgres`) with the databases `bank`, `openbanking` and `keycloak`, Keycloak (`keycloak`) with the realm `bank`, their Secrets, account `jenkins-deployer` | `scripts/cluster-up.sh` |
 | `bank` | `bank-core` and `bank-open-api`: Deployment, Service, HTTPRoute | Jenkins, with Helm |
 | Docker | registry `k3d-bank-registry`, on this machine `localhost:5050` | k3d |
+| this machine | the test CA's key and certificate, a copy of the smoke-test provider's, in `~/.config/bank-open-api/pki` | `scripts/cluster-up.sh` |
 
-Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8480 HTTP and 8443 HTTPS into Traefik, 5050
-the registry.
+Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS into Traefik, 5050 the registry.
+8480, Traefik's HTTP entry point, has no routes.
 
 ## Rules
 
@@ -124,8 +185,10 @@ the registry.
   contract's codes rather than ignored.
 - **Logs name consents, not people**: consent ids and counts, never IBANs, names or amounts.
 - **Configuration** comes from environment variables (`BANK_CORE_URL`, `DB_URL`, `DB_USER`, `DB_PASSWORD`,
-  `LOGGING_STRUCTURED_FORMAT_CONSOLE`), which the Helm chart sets; the database login comes from the Secret
-  `bank-open-api-db`.
+  `PROVIDER_TOKENS_ISSUER`, `PROVIDER_TOKENS_JWK_SET_URI`, `LOGGING_STRUCTURED_FORMAT_CONSOLE`), which the Helm
+  chart sets; the database login comes from the Secret `bank-open-api-db`.
+- **No token, certificate or key in a log line**: refusals log the contract's code and a detail written for the
+  provider; the provider id (a client id) and consent ids are logged, nothing a token holds beyond that.
 - **Nothing in the cluster is changed by hand**: the platform comes from `cluster-up.sh`, the services from
   Jenkins. Running either again is safe.
 
@@ -150,8 +213,31 @@ the registry.
   between turns into 409 `STATUS_INVALID` instead of being overwritten.
 - **The customer's approval comes in step 4.** Until then a new consent stays `received` and reads are refused;
   the tests approve in the database.
-- **No provider identity yet.** Any caller can create consents until step 3 brings Keycloak and step 4 ties each
-  consent to the provider that made it; the cluster has demo data only.
+- **Mutual TLS ends at Traefik, and is checked when offered.** Traefik's TLS options apply to every HTTPS router
+  alike, and step 4's approval pages are for browsers without a client certificate. So Traefik verifies a
+  certificate when one comes (`VerifyClientCertIfGiven`) and the services require it where it matters: Keycloak to
+  bind a token, bank-open-api on every call. Traefik's entry point drops `X-Forwarded-Tls-Client-Cert` (and headers
+  whose names only look like it) when a client sends it, so the header can only come from Traefik's middleware.
+  Inside the cluster any pod can still reach the services directly; step 6 adds the NetworkPolicies that leave
+  only Traefik.
+- **The binding check is a filter of its own.** Spring Security checks the token without seeing the request;
+  `CertificateBindingFilter` runs right after it with the request in hand, and its refusals have their own codes
+  (`CERTIFICATE_MISSING`, `CERTIFICATE_EXPIRED`) instead of a generic invalid token.
+- **The provider is the token's `azp`.** Keycloak names the client a token was issued to there, for the client
+  credentials grant as for step 4's authorization code flow. A consent stores it and is unknown to every other
+  provider: 403 or 400 `CONSENT_UNKNOWN`, the same answer as for a consent that does not exist.
+- **Keycloak's keys failing is a 503, not a 401.** A provider's token may well be fine when the keys cannot be
+  read, so the answer says to retry. Spring Security would rethrow that failure as a 500; `SecurityConfig` hands
+  it to `SecurityRefusals` instead.
+- **One error format.** Spring Security's refusals go through Spring MVC's `HandlerExceptionResolver`, so
+  `ApiExceptionHandler` writes and logs them as it does every other error.
+- **The realm is code, imported once.** `cluster/charts/keycloak/realm/bank-realm.json` is imported when Keycloak
+  starts and finds no realm `bank`. The smoke-test provider's certificate comes in through an environment
+  variable, from the Secret `cluster-up.sh` made, so the realm file holds no key material.
+- **The test CA's key never enters the cluster.** It stays in `~/.config/bank-open-api/pki` on this machine;
+  the cluster gets certificates, and the keys of the Gateway and the test provider. A renewed provider
+  certificate keeps its key, so Keycloak, which checks the provider's JWTs with the key it was given, need not
+  change.
 - **Read counts are kept.** One row per consent, data read and day; a cleanup of old days can come when it
   matters.
 
@@ -160,9 +246,12 @@ the registry.
 - **Endpoint**: its operation from GD Next's YAML into `bank-open-api.yaml`, then the generated method in a
   controller; tests with `@WebMvcTest` and, for the whole path, `BankOpenApiIT`.
 - **Consent rule**: in `Consent` (or `ConsentRequests` for what the bank offers), with a case in `ConsentTest`.
-- **Table or column**: a new Flyway migration `V2__...`; the old ones never change.
+- **Table or column**: a new Flyway migration `V3__...`; the old ones never change.
 - **Call to bank-core**: a method in `BankCoreClient` that turns every failure into `BankCoreUnavailableException`.
 - **Error**: a value in `ErrorCode` with its status, the contract's code and its text, then a test.
+- **Provider**: a client in the realm like `smoke-test` (scope `accounts`, `client-jwt`, the PS256 and binding
+  attributes), with its certificate from the bank's CA; the client policy then applies FAPI 2.0 to it.
+- **Token rule**: a check in `ProviderTokenValidator` with its code, and a case in `ProviderTokenValidatorTest`.
 - **Package**: a line in `MAY_DEPEND_ON` of `LayeringTest` and in the table above.
 - **Service in the cluster**: a chart like `charts/bank-open-api`, a Jenkinsfile with the same stages, and its
   database lines in `cluster-up.sh` (`ensure_secret`, `ensure_database`).

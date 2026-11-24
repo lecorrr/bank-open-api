@@ -8,7 +8,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="install-tools.sh"
-readonly PROJECT_VERSION="0.2.1"
+readonly PROJECT_VERSION="0.3.0"
 readonly K3D_VERSION="v5.9.0"
 readonly KUBECTL_VERSION="v1.36.6"
 readonly HELM_VERSION="v4.3.1"

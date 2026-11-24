@@ -24,6 +24,13 @@ bank-open-api:
   consents:
     # The longest a consent may run; a later validTo, such as the contract's 9999-12-31, is cut back to it.
     max-validity-days: 180
+  provider-tokens:
+    # Keycloak's realm bank. The issuer is its public address, which every token names; the Helm chart points
+    # jwk-set-uri at Keycloak inside the cluster. The defaults are the k3d cluster's public addresses.
+    issuer: ${PROVIDER_TOKENS_ISSUER:https://localhost:8443/realms/bank}
+    jwk-set-uri: ${PROVIDER_TOKENS_JWK_SET_URI:https://localhost:8443/realms/bank/protocol/openid-connect/certs}
+    # Keycloak's client scope "accounts" puts this into the tokens it issues for this API.
+    audience: bank-open-api
 
 management:
   endpoints:

@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One Keycloak at a time: two would share one database and import the realm in a race.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "keycloak.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keycloak.labels" . | nindent 8 }}
+      annotations:
+        # A changed realm file restarts Keycloak; it imports the realm only if the realm is missing.
+        checksum/realm: {{ .Files.Get "realm/bank-realm.json" | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The "restricted" Pod Security Standard: the official image runs as user 1000.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keycloak
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # The image is built for H2 and without our options, so Keycloak builds itself for them at each start:
+          # about half a minute.
+          args: ["start", "--import-realm"]
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: {{ .Values.database.url | quote }}
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: username
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: password
+            # The first admin, in the master realm; Keycloak creates it only while the database is empty.
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminSecret }}
+                  key: username
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminSecret }}
+                  key: password
+            - name: KC_HOSTNAME
+              value: {{ .Values.hostname | quote }}
+            - name: KC_HOSTNAME_ADMIN
+              value: {{ .Values.adminHostname | quote }}
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "true"
+            # Traefik ends the TLS and sends plain HTTP with X-Forwarded-* headers; its entry point drops such
+            # headers when a client sends them.
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+            # The client certificate Traefik passes on in X-Forwarded-Tls-Client-Cert: tokens are bound to it.
+            - name: KC_SPI_X509CERT_LOOKUP__PROVIDER
+              value: traefik
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            # The realm file names it as ${SMOKE_TEST_CERTIFICATE}: the key that signs the provider's JWTs.
+            - name: SMOKE_TEST_CERTIFICATE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smokeTestProviderSecret }}
+                  key: certificate-base64
+            # Half of the memory limit for the heap; the rest is metaspace, threads and the build at start.
+            - name: JAVA_OPTS_KC_HEAP
+              value: "-XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          # The build at start and the first database migration take a while: up to five minutes.
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Keycloak writes its build into the image's folders at start (see args), so the root file system
+            # stays writable; "restricted" does not ask for it to be read-only.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+      volumes:
+        - name: realm
+          configMap:
+            name: {{ .Release.Name }}-realm

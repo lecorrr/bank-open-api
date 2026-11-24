@@ -7,11 +7,15 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.regex.Pattern;
 import org.slf4j.MDC;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /** Puts the provider's X-Request-ID into the logging MDC and echoes it in the response, as the contract asks. */
 @Component
+// Before Spring Security's filters (order -100), so refused requests echo the id too and their log lines carry it.
+@Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class RequestIdFilter extends OncePerRequestFilter {
 
     public static final String HEADER = "X-Request-ID";

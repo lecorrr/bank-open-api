@@ -5,10 +5,21 @@ start payments, only with the customer's consent. It follows the Berlin Group Ne
 open banking specifications use, and sits in front of [bank-core](https://github.com/lecorrr/bank-core). Project 3
 of three, with bank-core and [bank-integration](https://github.com/lecorrr/bank-integration).
 
-**Status: 0.2.1, step 2 of 8: the contract and consents.** A provider asks for a consent to read named accounts,
-reads its status, and deletes it. Account data comes only under a valid consent, and the customer's approval
-arrives in step 4: until then a new consent stays `received` and reads are refused (the tests approve consents in
-the database). There is no provider identity yet (step 3), so the cluster holds demo data only.
+**Status: 0.3.0, step 3 of 8: providers sign in.** A provider signs in at the bank's Keycloak with a JWT signed
+by its own key, over mutual TLS, and gets an access token bound to its client certificate. Every call to the API
+needs that token and the same certificate, and a consent exists only for the provider that asked for it. The
+customer's approval arrives in step 4: until then a new consent stays `received` and reads are refused (the tests
+approve consents in the database).
+
+- **Provider sign-in as FAPI 2.0 asks**: Keycloak's realm `bank` puts every client with the scope `accounts` under
+  its built-in FAPI 2.0 Security Profile: `private_key_jwt` with PS256, tokens bound to the client certificate
+  (RFC 8705), PS256 signatures on the tokens.
+- **Mutual TLS at the edge**: Traefik ends TLS with a certificate from the bank's test CA, checks the provider's
+  client certificate against it and passes it on; a header that only claims to carry one never gets through.
+- **The API as an OAuth 2.0 resource server**: Spring Security checks the token's signature against Keycloak's
+  keys, its type, issuer, audience and expiry, then that it is bound to the certificate of this request, then the
+  scope. Each refusal has the contract's code: `TOKEN_UNKNOWN`, `TOKEN_EXPIRED`, `CERTIFICATE_MISSING`,
+  `ROLE_INVALID` and the rest.
 
 - **The contract as code**: the Spring interfaces and models are generated from GD Next's Open Banking Ukraine
   YAML, so a path, header or field that disagrees with the contract does not compile.
@@ -18,19 +29,21 @@ the database). There is no provider identity yet (step 3), so the cluster holds 
 - **The contract's errors**: RFC 7807 problem details with codes such as `CONSENT_INVALID` (401) or
   `ACCESS_EXCEEDED` (429); the catalogue is in [ARCHITECTURE.md](ARCHITECTURE.md#errors).
 - **Kubernetes on one machine**: k3d runs k3s 1.36 in Docker with its own image registry. Traefik routes through
-  the Gateway API: the Gateway belongs to the `bank` namespace, each service's chart brings its route.
-- **Helm and Jenkins**: one chart per service, this one and bank-core's. Jenkins tests, builds the image, pushes
-  it and runs `helm upgrade --install --rollback-on-failure` with an account that may deploy in the `bank`
-  namespace and nothing else, then takes a consent through the API via Traefik.
+  the Gateway API, HTTPS only: the Gateway belongs to the `bank` namespace, each service's chart brings its route.
+- **Helm and Jenkins**: one chart per service, this one and bank-core's, plus PostgreSQL's and Keycloak's for the
+  platform. Jenkins tests, builds the image, pushes it and runs `helm upgrade --install --rollback-on-failure`
+  with an account that may deploy in the `bank` namespace and nothing else, then signs in as the test provider and
+  takes a consent through the API via Traefik.
 - **Locked-down pods**: the namespace enforces the "restricted" Pod Security Standard. Pods run as user 10001 on a
   read-only file system, without a service account token, with probes on Spring Boot's liveness and readiness.
 - **One trace and one request id across services**: a provider's `traceparent` continues into bank-core, and its
   `X-Request-ID` goes along as bank-core's `X-Request-Id`. Every read of account data is logged under the consent
   id; logs are ECS JSON in the cluster.
 
-Stack: Java 21, Spring Boot 4.1 (RestClient, JdbcClient), openapi-generator, PostgreSQL 17 with Flyway, Micrometer
-Tracing with OpenTelemetry, k3d with k3s 1.36, Traefik 3.7 with the Gateway API, Helm 4, Jenkins, JUnit,
-Testcontainers, WireMock, Maven. The design is in [ARCHITECTURE.md](ARCHITECTURE.md).
+Stack: Java 21, Spring Boot 4.1 (RestClient, JdbcClient), Spring Security 7.1 (OAuth 2.0 resource server),
+Keycloak 26.8, openapi-generator, PostgreSQL 17 with Flyway, Micrometer Tracing with OpenTelemetry, k3d with k3s
+1.36, Traefik 3.7 with the Gateway API, Helm 4, Jenkins, JUnit, Testcontainers, WireMock, Maven. The design is in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Build and test
 
@@ -45,8 +58,9 @@ cp -r ~/projects/bank-core/mvnw ~/projects/bank-core/.mvn .
 ```
 
 Unit tests (`*Test`) run first, then the integration tests (`*IT`) with PostgreSQL in Testcontainers (Docker must
-be running) and WireMock in place of bank-core, then the 80 % line-coverage gate (report in
-`target/site/jacoco/index.html`). The API code is generated into `target/generated-sources` on every build.
+be running), WireMock in place of bank-core and of Keycloak's keys, and tokens the tests sign themselves; then the
+80 % line-coverage gate (report in `target/site/jacoco/index.html`). The API code is generated into
+`target/generated-sources` on every build.
 
 ## Run on this machine
 
@@ -56,38 +70,21 @@ PostgreSQL in Docker, on localhost port 5437 (`OPENBANKING_DB_PORT` picks anothe
 docker compose up -d
 ```
 
-Start bank-core too (its README: `spring-boot:run` with the demo profile on port 8080), then:
-
 ```
 ./mvnw spring-boot:run
 ```
 
-The log shows the running version (`bank-open-api 0.2.1 started`). The API is on port 8090. Ask for a consent to
-the balances of bank-core's first demo account, and keep its id:
-
-```
-CONSENT_ID=$(curl -sS -X POST localhost:8090/v2/consents/account-access -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)" -H 'PSU-IP-Address: 192.0.2.10' -H 'Content-Type: application/json' -d '{"access": {"payments": [{"account": {"iban": "UA843999990000000000000000001"}, "rights": ["balances"]}]}, "consentType": "detailed", "recurringIndicator": true, "validTo": "9999-12-31", "frequencyPerDay": 4}' | sed -n 's/.*"consentId":"\([^"]*\)".*/\1/p')
-```
-
-```
-curl -sS -w '\n' -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)" -H "Consent-ID: $CONSENT_ID" localhost:8090/v2/accounts
-```
-
-The answer is `401` with `"code": "CONSENT_INVALID"`: the consent is `received`. Until step 4 brings the
-customer's approval page, approve it in the database, then run the same `curl` again for the account under its
-`resourceId`:
-
-```
-docker compose exec postgres psql -U openbanking -c "UPDATE consent SET status = 'valid' WHERE id = '$CONSENT_ID'"
-```
-
-The contract this version serves is at `localhost:8090/openapi/bank-open-api.yaml`.
+The log shows the running version (`bank-open-api 0.3.0 started`), and the contract this version serves is at
+`localhost:8090/openapi/bank-open-api.yaml`. Every call to the API needs a provider's token from Keycloak and the
+client certificate it is bound to, which only the cluster has, so on this machine the API answers
+`401 TOKEN_UNKNOWN`; the integration tests cover it with tokens they sign themselves.
 
 ## Run in the k3d cluster
 
-[docs/cluster.md](docs/cluster.md) has the steps: the tools (`scripts/install-tools.sh`), the cluster with its
-Gateway, PostgreSQL and Jenkins' deploy account (`scripts/cluster-up.sh`), Jenkins, and the check. Once both
-services are deployed, the smoke test takes a consent through Traefik:
+[docs/cluster.md](docs/cluster.md) has the steps: the tools (`scripts/install-tools.sh`), the cluster with the
+test CA, Traefik's HTTPS Gateway, PostgreSQL, Keycloak and Jenkins' deploy account (`scripts/cluster-up.sh`),
+Jenkins, and calls by hand. Once both services are deployed, the smoke test signs in as the test provider and takes
+a consent through Traefik:
 
 ```
 bash scripts/smoke-test.sh
@@ -97,6 +94,7 @@ bash scripts/smoke-test.sh
 
 ```
 src/main/java/dev/tkachuk/openbanking/
+  security/      the security chain: provider tokens, certificate binding, refusals in the contract's codes
   consents/      consents: rules, SQL, the consent endpoints
   accounts/      the account endpoints, read under a consent
   bankcore/      the client for bank-core's REST API
@@ -108,12 +106,13 @@ charts/bank-open-api/     Helm chart: Deployment, Service, HTTPRoute
 cluster/
   k3d.yaml                the cluster: k3s, registry, ports
   traefik-config.yaml     Traefik with the Gateway API
-  platform/               namespace, Gateway, Jenkins' deploy account
+  platform/               namespace, HTTPS Gateway, Traefik's TLS options, Jenkins' deploy account
   charts/postgres/        PostgreSQL from the official image
+  charts/keycloak/        Keycloak from the official image, with the realm bank
 scripts/
   install-tools.sh        k3d, kubectl and helm into ~/.local/bin
-  cluster-up.sh           the cluster and its platform, safe to run again
-  smoke-test.sh           a consent through the API, after each deploy
+  cluster-up.sh           the cluster and its platform, certificates included, safe to run again
+  smoke-test.sh           signs in as the test provider, takes a consent through the API
 compose.yaml              PostgreSQL for running on this machine
 Jenkinsfile               test, image, deploy to k3d, smoke test
 ```
@@ -121,8 +120,9 @@ Jenkinsfile               test, image, deploy to k3d, smoke test
 ## The steps
 
 1. Walking skeleton: the cluster, Traefik, Helm, Jenkins, one unsecured endpoint.
-2. The contract from GD Next's Ukrainian YAML; consents in PostgreSQL. **(this version)**
+2. The contract from GD Next's Ukrainian YAML; consents in PostgreSQL.
 3. Keycloak: the bank realm, providers with private-key JWT and certificate-bound tokens, FAPI 2.0.
+   **(this version)**
 4. Customer approval of a consent, and the check on every call: token, certificate, consent, account.
 5. Payments that become bank-core transfers, with ISO 20022 statuses.
 6. Edge rules: client certificates and per-provider rate limits in Traefik.

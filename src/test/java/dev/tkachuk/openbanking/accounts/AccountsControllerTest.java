@@ -6,12 +6,15 @@ import static org.hamcrest.Matchers.not;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.tkachuk.openbanking.FixedClock;
+import dev.tkachuk.openbanking.TestProviders;
 import dev.tkachuk.openbanking.bankcore.BankCoreAccount;
 import dev.tkachuk.openbanking.bankcore.BankCoreClient;
 import dev.tkachuk.openbanking.bankcore.BankCoreUnavailableException;
@@ -20,31 +23,33 @@ import dev.tkachuk.openbanking.common.error.ErrorCode;
 import dev.tkachuk.openbanking.consents.AccessRight;
 import dev.tkachuk.openbanking.consents.ConsentAccount;
 import dev.tkachuk.openbanking.consents.ConsentService;
+import dev.tkachuk.openbanking.security.SecurityConfig;
 import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+// The API's security chain is part of the slice. Requests come with TestProviders.provider, a token Spring Security
+// takes as checked, so the decoder of real tokens is a mock that is never called.
 @WebMvcTest(AccountsController.class)
-@Import(AccountsControllerTest.FixedClock.class)
+@Import({SecurityConfig.class, FixedClock.class})
+@MockitoBean(types = JwtDecoder.class)
 class AccountsControllerTest {
 
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
     private static final String CONSENT_ID = "3f2a6c1e-8b4d-4e7f-9a12-6c5d4b3a2f10";
+    private static final String PROVIDER = TestProviders.PROVIDER_A;
     private static final UUID RESOURCE_A = UUID.fromString("0f1b8a4e-3c55-4d6a-9a43-1c2e5b7d9f01");
     private static final UUID RESOURCE_B = UUID.fromString("5a7c9e1f-2b4d-4f68-8a0c-3e5f7a9b1d02");
     private static final String IBAN_A = "UA843999990000000000000000001";
@@ -67,7 +72,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldListConsentAccountsUnderTheirResourceIds() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, false)).thenReturn(List.of(ACCOUNT_A, ACCOUNT_B));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A, ACCOUNT_B));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
         when(bankCore.findAccount(IBAN_B)).thenReturn(Optional.of(BANK_CORE_B));
 
@@ -88,7 +93,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAddBalancesOnlyWhereTheConsentIncludesThem() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, false)).thenReturn(List.of(ACCOUNT_A, ACCOUNT_B));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A, ACCOUNT_B));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
         when(bankCore.findAccount(IBAN_B)).thenReturn(Optional.of(BANK_CORE_B));
 
@@ -103,7 +108,7 @@ class AccountsControllerTest {
     @Test
     void shouldLeaveOutAccountsBankCoreDoesNotKeepAsNamed() throws Exception {
         ConsentAccount inEuro = new ConsentAccount(RESOURCE_B, IBAN_B, "EUR", Set.of(AccessRight.BALANCES));
-        when(consents.accountsToList(CONSENT_ID, false)).thenReturn(List.of(ACCOUNT_A, inEuro));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A, inEuro));
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.empty());
         when(bankCore.findAccount(IBAN_B)).thenReturn(Optional.of(BANK_CORE_B));
 
@@ -114,17 +119,17 @@ class AccountsControllerTest {
 
     @Test
     void shouldTellConsentsWhenTheCustomerStartedTheRead() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, true)).thenReturn(List.of());
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, true)).thenReturn(List.of());
 
         mockMvc.perform(read("/v2/accounts").header("PSU-IP-Address", "192.0.2.10"))
                 .andExpect(status().isOk());
 
-        verify(consents).accountsToList(CONSENT_ID, true);
+        verify(consents).accountsToList(CONSENT_ID, PROVIDER, true);
     }
 
     @Test
     void shouldReadAccountDetails() throws Exception {
-        when(consents.accountToRead(CONSENT_ID, RESOURCE_A.toString(), AccessRight.ACCOUNT_DETAILS, false))
+        when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.ACCOUNT_DETAILS, false))
                 .thenReturn(ACCOUNT_A);
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(BANK_CORE_A));
 
@@ -137,7 +142,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldReadBalanceWithTheCurrencysDecimals() throws Exception {
-        when(consents.accountToRead(CONSENT_ID, RESOURCE_A.toString(), AccessRight.BALANCES, false))
+        when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.BALANCES, false))
                 .thenReturn(ACCOUNT_A);
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.of(new BankCoreAccount(IBAN_A, "UAH", BigDecimal.TEN)));
 
@@ -152,7 +157,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAnswerResourceUnknownWhenBankCoreNoLongerKeepsTheAccount() throws Exception {
-        when(consents.accountToRead(CONSENT_ID, RESOURCE_A.toString(), AccessRight.BALANCES, false))
+        when(consents.accountToRead(CONSENT_ID, PROVIDER, RESOURCE_A.toString(), AccessRight.BALANCES, false))
                 .thenReturn(ACCOUNT_A);
         when(bankCore.findAccount(IBAN_A)).thenReturn(Optional.empty());
 
@@ -163,7 +168,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAnswerConsentRefusalWithItsCode() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, false))
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false))
                 .thenThrow(new ApiException(ErrorCode.CONSENT_INVALID, "The consent is received, not valid"));
 
         mockMvc.perform(read("/v2/accounts"))
@@ -178,7 +183,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldRefuseReadWithoutConsentId() throws Exception {
-        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID))
+        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("FORMAT_ERROR"))
                 .andExpect(jsonPath("$.detail").value("Header Consent-ID is missing"));
@@ -188,7 +193,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldRefuseReadWithoutRequestId() throws Exception {
-        mockMvc.perform(get("/v2/accounts").header("Consent-ID", CONSENT_ID))
+        mockMvc.perform(get("/v2/accounts").header("Consent-ID", CONSENT_ID).with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("FORMAT_ERROR"))
                 .andExpect(jsonPath("$.detail").value("Header X-Request-ID is missing"));
@@ -198,7 +203,8 @@ class AccountsControllerTest {
 
     @Test
     void shouldRefuseRequestIdThatIsNotUuid() throws Exception {
-        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", "not-a-uuid").header("Consent-ID", CONSENT_ID))
+        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", "not-a-uuid").header("Consent-ID", CONSENT_ID)
+                        .with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isBadRequest())
                 .andExpect(header().doesNotExist("X-Request-ID"))
                 .andExpect(jsonPath("$.code").value("FORMAT_ERROR"))
@@ -218,7 +224,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAnswer503WhenBankCoreIsUnavailable() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, false)).thenReturn(List.of(ACCOUNT_A));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenReturn(List.of(ACCOUNT_A));
         when(bankCore.findAccount(IBAN_A)).thenThrow(new BankCoreUnavailableException("bank-core answered 500", null));
 
         mockMvc.perform(read("/v2/accounts"))
@@ -231,7 +237,7 @@ class AccountsControllerTest {
 
     @Test
     void shouldAnswer500ForUnexpectedError() throws Exception {
-        when(consents.accountsToList(CONSENT_ID, false)).thenThrow(new IllegalStateException("a bug"));
+        when(consents.accountsToList(CONSENT_ID, PROVIDER, false)).thenThrow(new IllegalStateException("a bug"));
 
         mockMvc.perform(read("/v2/accounts"))
                 .andExpect(status().isInternalServerError())
@@ -249,7 +255,8 @@ class AccountsControllerTest {
 
     @Test
     void shouldAnswerMethodTheApiDoesNotOfferWithServiceInvalid() throws Exception {
-        mockMvc.perform(post("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID))
+        mockMvc.perform(post("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID)
+                        .with(TestProviders.provider(PROVIDER)))
                 .andExpect(status().isMethodNotAllowed())
                 .andExpect(jsonPath("$.code").value("SERVICE_INVALID"));
 
@@ -265,17 +272,43 @@ class AccountsControllerTest {
         verifyNoInteractions(consents, bankCore);
     }
 
-    private static MockHttpServletRequestBuilder read(String path) {
-        return get(path).header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID);
+    @Test
+    void shouldRefuseReadWithoutProviderToken() throws Exception {
+        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", "Bearer"))
+                .andExpect(header().string("X-Request-ID", REQUEST_ID))
+                .andExpect(jsonPath("$.code").value("TOKEN_UNKNOWN"));
+
+        verifyNoInteractions(consents, bankCore);
     }
 
-    @TestConfiguration(proxyBeanMethods = false)
-    static class FixedClock {
+    @Test
+    void shouldRefuseTokenWithoutTheAccountsScopeAsRoleInvalid() throws Exception {
+        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID)
+                        .with(TestProviders.provider(PROVIDER, "payments")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", "Bearer error=\"insufficient_scope\""))
+                .andExpect(jsonPath("$.code").value("ROLE_INVALID"));
 
-        // 10:00 UTC is noon in Kyiv, so balances carry 22 November as their date.
-        @Bean
-        Clock clock() {
-            return Clock.fixed(Instant.parse("2026-11-22T10:00:00Z"), ZoneId.of("Europe/Kyiv"));
-        }
+        verifyNoInteractions(consents, bankCore);
+    }
+
+    // The token is bound to provider A's certificate, but the request comes without any.
+    @Test
+    void shouldRefuseTokenWithoutTheCertificateItIsBoundTo() throws Exception {
+        mockMvc.perform(get("/v2/accounts").header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID)
+                        .with(jwt().jwt(token -> token.claim("azp", PROVIDER).claim("scope", "accounts")
+                                .claim("cnf", Map.of("x5t#S256", TestProviders.thumbprint(PROVIDER))))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", "Bearer error=\"invalid_token\""))
+                .andExpect(jsonPath("$.code").value("CERTIFICATE_MISSING"));
+
+        verifyNoInteractions(consents, bankCore);
+    }
+
+    private static MockHttpServletRequestBuilder read(String path) {
+        return get(path).header("X-Request-ID", REQUEST_ID).header("Consent-ID", CONSENT_ID)
+                .with(TestProviders.provider(PROVIDER));
     }
 }

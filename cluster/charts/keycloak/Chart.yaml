@@ -1,0 +1,6 @@
+apiVersion: v2
+name: keycloak
+description: Keycloak for the bank's realm "bank" in the k3d cluster, from the official image
+type: application
+version: 0.1.0
+appVersion: "26.8.2"

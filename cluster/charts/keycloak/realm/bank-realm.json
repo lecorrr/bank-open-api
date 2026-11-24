@@ -1,0 +1,148 @@
+{
+  "realm": "bank",
+  "displayName": "Bank",
+  "enabled": true,
+  "sslRequired": "external",
+  "accessTokenLifespan": 300,
+  "defaultSignatureAlgorithm": "PS256",
+  "attributes": {
+    "CreateDefaultClientScopes": "true"
+  },
+  "components": {
+    "org.keycloak.keys.KeyProvider": [
+      {
+        "name": "rsa-generated",
+        "providerId": "rsa-generated",
+        "subComponents": {},
+        "config": {
+          "priority": [
+            "100"
+          ],
+          "keyUse": [
+            "SIG"
+          ],
+          "algorithm": [
+            "PS256"
+          ]
+        }
+      },
+      {
+        "name": "rsa-enc-generated",
+        "providerId": "rsa-enc-generated",
+        "subComponents": {},
+        "config": {
+          "priority": [
+            "100"
+          ],
+          "keyUse": [
+            "ENC"
+          ],
+          "algorithm": [
+            "RSA-OAEP"
+          ]
+        }
+      },
+      {
+        "name": "hmac-generated-hs512",
+        "providerId": "hmac-generated",
+        "subComponents": {},
+        "config": {
+          "priority": [
+            "100"
+          ],
+          "algorithm": [
+            "HS512"
+          ]
+        }
+      },
+      {
+        "name": "aes-generated",
+        "providerId": "aes-generated",
+        "subComponents": {},
+        "config": {
+          "priority": [
+            "100"
+          ]
+        }
+      }
+    ]
+  },
+  "clientScopes": [
+    {
+      "name": "accounts",
+      "description": "Account information: consents, account lists, details and balances",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read the accounts you choose"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience bank-open-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "bank-open-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clientPolicies": {
+    "policies": [
+      {
+        "name": "fapi-2-for-providers",
+        "description": "Providers, the clients with the scope accounts, follow the FAPI 2.0 Security Profile",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-scopes",
+            "configuration": {
+              "type": "Default",
+              "scopes": [
+                "accounts"
+              ]
+            }
+          }
+        ],
+        "profiles": [
+          "fapi-2-security-profile"
+        ]
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "smoke-test",
+      "name": "Smoke test provider",
+      "description": "The test provider scripts/smoke-test.sh signs in as",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "consentRequired": true,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": [
+        "basic",
+        "accounts"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "token.endpoint.auth.signing.alg": "PS256",
+        "jwt.credential.certificate": "${SMOKE_TEST_CERTIFICATE}",
+        "tls.client.certificate.bound.access.tokens": "true",
+        "access.token.header.type.rfc9068": "true",
+        "access.token.signed.response.alg": "PS256"
+      }
+    }
+  ]
+}

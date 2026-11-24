@@ -1,0 +1,39 @@
+image:
+  repository: quay.io/keycloak/keycloak
+  tag: 26.8.2
+
+# Keycloak's public address: Traefik's HTTPS entry point as k3d publishes it. Tokens name it as their issuer, and
+# a provider's signed JWT names it as its audience. Back-channel calls (the token endpoint, the keys) may come
+# through other addresses, such as https://k3d-bank-serverlb from Jenkins.
+hostname: https://localhost:8443
+# The admin console stays off the edge: kubectl -n bank port-forward svc/keycloak 8081:8080 (docs/cluster.md).
+adminHostname: http://localhost:8081
+
+database:
+  url: jdbc:postgresql://postgres:5432/keycloak
+  # Secret with the keys username and password; scripts/cluster-up.sh creates it.
+  existingSecret: keycloak-db
+
+# Secret with the keys username and password of the first admin; scripts/cluster-up.sh creates it.
+adminSecret: keycloak-admin
+
+# Secret with the smoke-test provider's certificate under "certificate-base64" (base64 DER on one line, as the
+# realm file needs it); scripts/cluster-up.sh creates it.
+smokeTestProviderSecret: smoke-test-provider
+
+# The routes from the bank's Gateway: the realm's endpoints and the login pages' resources (step 4). The master
+# realm and the admin console are not routed.
+route:
+  enabled: true
+  gateway: bank-gateway
+  listener: websecure
+  # Traefik's middleware that passes the provider's client certificate on (cluster/platform/edge.yaml): Keycloak
+  # binds the tokens it issues to it.
+  clientCertificateMiddleware: pass-client-cert
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 768Mi
+  limits:
+    memory: 1Gi
