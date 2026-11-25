@@ -22,7 +22,8 @@ import org.springframework.web.servlet.HandlerExceptionResolver;
 
 /**
  * The security chain in front of the API. A provider calls with an access token from Keycloak's realm bank, over
- * mutual TLS with the certificate the token is bound to; Traefik ends the TLS and passes the certificate on.
+ * mutual TLS with the certificate the token is bound to; Traefik ends the TLS on the API's host, where it asks for
+ * the certificate in the handshake, and passes the certificate on.
  * Spring Security checks the token (PS256 signature with Keycloak's keys, then ProviderTokenValidator's rules),
  * CertificateBindingFilter the certificate, and the authorization rules the scope. Everything the customer pages'
  * chain (CustomerSignInConfig) does not take ends here, and what is not the API is refused.
@@ -33,6 +34,8 @@ public class SecurityConfig {
 
     /** What Keycloak's client scope "accounts" grants: consents and account information. */
     static final String ACCOUNTS_SCOPE = "SCOPE_accounts";
+    /** What Keycloak's client scope "payments" grants: payment initiation. */
+    static final String PAYMENTS_SCOPE = "SCOPE_payments";
 
     /** RFC 9728: where a client finds out how to get a token for this API. */
     static final String RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
@@ -45,6 +48,8 @@ public class SecurityConfig {
                         // Errors that escape Spring MVC end on /error; they keep their own answer.
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health/**", "/actuator/info", "/openapi/**").permitAll()
+                        // Before /v2/**: a provider may hold one of the scopes and not the other.
+                        .requestMatchers("/v2/payments/**").hasAuthority(PAYMENTS_SCOPE)
                         .requestMatchers("/v2/**").hasAuthority(ACCOUNTS_SCOPE)
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resourceServer -> resourceServer
@@ -54,11 +59,13 @@ public class SecurityConfig {
                         .withObjectPostProcessor(answerKeyFailuresThrough(refusals))
                         // Spring Security answers RFC 9728's metadata ahead of the rules above, for anyone: it says
                         // where tokens come from, nothing secret. Bearer header and bound tokens are its defaults.
+                        // The resource is the API's own host, the address providers call it at.
                         .protectedResourceMetadata(metadata -> metadata.protectedResourceMetadataCustomizer(
                                 resource -> resource
-                                        .resource(publicUrl.publicUrl().toString())
+                                        .resource(publicUrl.apiUrl().toString())
                                         .authorizationServer(tokens.issuer().toString())
                                         .scope("accounts")
+                                        .scope("payments")
                                         .resourceName("bank-open-api"))))
                 .addFilterAfter(new CertificateBindingFilter(refusals, clock), BearerTokenAuthenticationFilter.class)
                 .exceptionHandling(exceptions -> exceptions
@@ -89,7 +96,7 @@ public class SecurityConfig {
     @Bean
     SecurityRefusals securityRefusals(@Qualifier("handlerExceptionResolver") HandlerExceptionResolver errors,
             PublicUrlProperties publicUrl) {
-        return new SecurityRefusals(errors, publicUrl.of(RESOURCE_METADATA_PATH));
+        return new SecurityRefusals(errors, publicUrl.api(RESOURCE_METADATA_PATH));
     }
 
     @Bean

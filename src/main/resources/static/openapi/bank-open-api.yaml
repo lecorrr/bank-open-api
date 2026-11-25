@@ -1,12 +1,14 @@
 # The operations bank-open-api offers, taken from GD Next's Openbanking Ukraine specification
 # (https://github.com/GDNext-GmbH/Open-Banking-Ukraine, commit b30abe5), Apache License 2.0, see
 # LICENSE-openbanking-ukraine.txt next to this file. Changed from the original: only these operations;
-# only the request headers the bank reads; no examples; own info, servers, security scheme and tags;
-# the bank's note on TPP-Redirect-URI.
+# only the request headers the bank reads; no examples; own info, servers, security scheme, security
+# requirements and tags; the bank's note on TPP-Redirect-URI; for payments the payment service fixed to
+# payments in the path, the bank's one payment product, single payments in JSON only, cancellation
+# without authorisation, and ultimateCreditor as an object the bank refuses.
 openapi: 3.0.1
 info:
   title: bank-open-api
-  version: 0.4.0
+  version: 0.6.1
   description: |
     The bank's open banking API: the operations bank-open-api offers, taken from GD Next's
     "Openbanking Ukraine" 2.0 specification, which is based on the Berlin Group's NextGenPSD2.
@@ -14,11 +16,12 @@ info:
     name: Apache License 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 servers:
-- url: https://localhost:8443
-  description: the k3d cluster, through Traefik with mutual TLS
+- url: https://api.localhost:8443
+  description: the k3d cluster, on the API's own host, where Traefik requires the provider's client certificate
 tags:
 - name: Consents
 - name: Accounts
+- name: Payments
 paths:
   /v2/consents/account-access:
     post:
@@ -40,8 +43,8 @@ paths:
       tags:
       - Consents
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/X-Request-ID'
       - $ref: '#/components/parameters/TPP-Redirect-URI'
@@ -86,8 +89,8 @@ paths:
       tags:
       - Consents
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/consentId_PATH'
       - $ref: '#/components/parameters/X-Request-ID'
@@ -126,8 +129,8 @@ paths:
       tags:
       - Consents
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/consentId_PATH'
       - $ref: '#/components/parameters/consentCategory'
@@ -167,8 +170,8 @@ paths:
       tags:
       - Consents
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/consentCategory'
       - $ref: '#/components/parameters/consentId_PATH'
@@ -219,8 +222,8 @@ paths:
       tags:
       - Accounts
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/withBalanceQuery'
       - $ref: '#/components/parameters/X-Request-ID'
@@ -277,8 +280,8 @@ paths:
       tags:
       - Accounts
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/accountId'
       - $ref: '#/components/parameters/withBalanceQuery'
@@ -327,8 +330,8 @@ paths:
       tags:
       - Accounts
       security:
-      - {}
-      - BearerAuthOAuth: []
+      - BearerAuthOAuth:
+        - accounts
       parameters:
       - $ref: '#/components/parameters/accountId'
       - $ref: '#/components/parameters/X-Request-ID'
@@ -361,6 +364,227 @@ paths:
           $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_AIS'
         '503':
           $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_AIS'
+  /v2/payments/{payment-product}:
+    post:
+      summary: Payment initiation request
+      description: |
+        This method is used to initiate a payment at the ASPSP.
+
+        ## Variants of payment initiation requests
+
+        This method to initiate a payment initiation at the ASPSP can be sent with either a JSON
+        body depending on the payment product in the path.
+
+        There are the following **payment products**:
+
+          - Payment products with payment information in *JSON* format:
+            - ***sepa-credit-transfers***
+            - ***instant-sepa-credit-transfers***
+            - ***target-2-payments***
+            - ***cross-border-credit-transfers***
+
+        Furthermore the request body depends on the **payment-service**:
+          * ***payments***: A single payment initiation request.
+
+          * ***bulk-payments***: A collection of several payment initiation requests.
+            In case of a *JSON* there are several JSON payment blocks contained in a joining list.
+
+          * ***periodic-payments***:
+            Create a standing order initiation resource for recurrent i.e. periodic payments addressable under
+            {paymentId} with all data relevant for the corresponding payment product and the execution of the standing
+            order contained in a JSON body.
+
+        This is the first step in the API to initiate the related recurring/periodic payment.
+
+        ## Single and multilevel SCA Processes
+
+        The payment initiation requests are independent from the need of one or multilevel
+        SCA processing, i.e. independent from the number of authorisations needed for the execution of payments.
+
+        But the response messages are specific to either one SCA processing or multilevel SCA processing.
+
+        For payment initiation with multilevel SCA, this specification requires an explicit start of the authorisation,
+        i.e. links directly associated with SCA processing like 'scaRedirect' or 'scaOAuth' cannot be contained in the
+        response message of a Payment Initiation Request for a payment, where multiple authorisations are needed.
+        Also if any data is needed for the next action, like selecting an SCA method is not supported in the response,
+        since all starts of the multiple authorisations are fully equal.
+        In these cases, first an authorisation sub-resource has to be generated following the 'startAuthorisation' link.
+      operationId: initiatePayment
+      tags:
+      - Payments
+      security:
+      - BearerAuthOAuth:
+        - payments
+      parameters:
+      - $ref: '#/components/parameters/paymentProduct'
+      - $ref: '#/components/parameters/X-Request-ID'
+      - $ref: '#/components/parameters/PSU-IP-Address_mandatory'
+      - $ref: '#/components/parameters/TPP-Redirect-URI'
+      requestBody:
+        $ref: '#/components/requestBodies/paymentInitiation'
+      responses:
+        '201':
+          $ref: '#/components/responses/CREATED_201_PaymentInitiation'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_PIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_PIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_PIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_PIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_PIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_PIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_PIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_PIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_PIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_PIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_PIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_PIS'
+  /v2/payments/{payment-product}/{paymentId}:
+    get:
+      summary: Get payment information
+      description: Returns the content of a payment object
+      operationId: getPaymentInformation
+      tags:
+      - Payments
+      security:
+      - BearerAuthOAuth:
+        - payments
+      parameters:
+      - $ref: '#/components/parameters/paymentProduct'
+      - $ref: '#/components/parameters/paymentId'
+      - $ref: '#/components/parameters/X-Request-ID'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_PaymentInitiationInformation'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_PIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_PIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_PIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_PIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_PIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_PIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_PIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_PIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_PIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_PIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_PIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_PIS'
+    delete:
+      summary: Payment cancellation request
+      description: |
+        This method initiates the cancellation of a payment.
+        Depending on the payment-service, the payment-product and the ASPSP's implementation,
+        this TPP call might be sufficient to cancel a payment.
+        If an authorisation of the payment cancellation is mandated by the ASPSP,
+        a corresponding hyperlink will be contained in the response message.
+
+        Cancels the addressed payment with resource identification paymentId if applicable to the payment-service,
+        payment-product and received in product related timelines (e.g. before end of business day for scheduled
+        payments of the last business day before the scheduled execution day).
+
+        The response to this DELETE command will tell the TPP whether the
+          * access method was rejected,
+          * access method was successful, or
+          * access method is generally applicable, but further authorisation processes are needed.
+      operationId: cancelPayment
+      tags:
+      - Payments
+      security:
+      - BearerAuthOAuth:
+        - payments
+      parameters:
+      - $ref: '#/components/parameters/paymentProduct'
+      - $ref: '#/components/parameters/paymentId'
+      - $ref: '#/components/parameters/X-Request-ID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NO_CONTENT_204_PaymentInitiationCancel'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_PIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_PIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_PIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_PIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_PIS_CANC'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_PIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_PIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_PIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_PIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_PIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_PIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_PIS'
+  /v2/payments/{payment-product}/{paymentId}/status:
+    get:
+      summary: Payment initiation status request
+      description: Check the transaction status of a payment initiation.
+      operationId: getPaymentInitiationStatus
+      tags:
+      - Payments
+      security:
+      - BearerAuthOAuth:
+        - payments
+      parameters:
+      - $ref: '#/components/parameters/paymentProduct'
+      - $ref: '#/components/parameters/paymentId'
+      - $ref: '#/components/parameters/X-Request-ID'
+      responses:
+        '200':
+          $ref: '#/components/responses/OK_200_PaymentInitiationStatus'
+        '400':
+          $ref: '#/components/responses/BAD_REQUEST_400_PIS'
+        '401':
+          $ref: '#/components/responses/UNAUTHORIZED_401_PIS'
+        '403':
+          $ref: '#/components/responses/FORBIDDEN_403_PIS'
+        '404':
+          $ref: '#/components/responses/NOT_FOUND_404_PIS'
+        '405':
+          $ref: '#/components/responses/METHOD_NOT_ALLOWED_405_PIS'
+        '406':
+          $ref: '#/components/responses/NOT_ACCEPTABLE_406_PIS'
+        '408':
+          $ref: '#/components/responses/REQUEST_TIMEOUT_408_PIS'
+        '409':
+          $ref: '#/components/responses/CONFLICT_409_PIS'
+        '415':
+          $ref: '#/components/responses/UNSUPPORTED_MEDIA_TYPE_415_PIS'
+        '429':
+          $ref: '#/components/responses/TOO_MANY_REQUESTS_429_PIS'
+        '500':
+          $ref: '#/components/responses/INTERNAL_SERVER_ERROR_500_PIS'
+        '503':
+          $ref: '#/components/responses/SERVICE_UNAVAILABLE_503_PIS'
 components:
   schemas:
     Error400_AIS:
@@ -427,6 +651,70 @@ components:
             $ref: '#/components/schemas/clientMessage400_AIS'
         _links:
           $ref: '#/components/schemas/linksAll'
+    Error400_NG_PIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 400.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage400_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error400_PIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 400 for PIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode400_PIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode400_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
     Error401_AIS:
       description: |
         Standardised definition of reporting error information according to [RFC7807]
@@ -489,6 +777,70 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/clientMessage401_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error401_NG_PIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 401.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage401_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error401_PIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 401 for PIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode401_PIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode401_PIS'
         _links:
           $ref: '#/components/schemas/linksAll'
     Error403_AIS:
@@ -555,6 +907,70 @@ components:
             $ref: '#/components/schemas/clientMessage403_AIS'
         _links:
           $ref: '#/components/schemas/linksAll'
+    Error403_NG_PIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 403.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage403_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error403_PIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 403 for PIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode403_PIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode403_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
     Error404_AIS:
       description: |
         Standardised definition of reporting error information according to [RFC7807]
@@ -619,6 +1035,70 @@ components:
             $ref: '#/components/schemas/clientMessage404_AIS'
         _links:
           $ref: '#/components/schemas/linksAll'
+    Error404_NG_PIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 404.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage404_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error404_PIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 404 for PIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode404_PIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode404_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
     Error405_AIS:
       description: |
         Standardised definition of reporting error information according to [RFC7807]
@@ -681,6 +1161,134 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/clientMessage405_AIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error405_NG_PIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 401.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage405_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error405_NG_PIS_CANC:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 401.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage405_PIS_CANC'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error405_PIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 405 for PIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode405_PIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode405_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+    Error405_PIS_CANC:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 405 for a payment cancelation (PIS).
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode405_PIS_CANC'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode405_PIS_CANC'
         _links:
           $ref: '#/components/schemas/linksAll'
     Error406_AIS:
@@ -815,6 +1423,74 @@ components:
       - category: ERROR
         code: STATUS_INVALID
         text: additional text information of the ASPSP up to 500 characters
+    Error409_NG_PIS:
+      description: |
+        NextGenPSD2 specific definition of reporting error information in case of a HTTP error code 409.
+      type: object
+      properties:
+        tppMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage409_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
+      example:
+      - category: ERROR
+        code: STATUS_INVALID
+        text: additional text information of the ASPSP up to 500 characters
+    Error409_PIS:
+      description: |
+        Standardised definition of reporting error information according to [RFC7807]
+        in case of a HTTP error code 409 for PIS.
+      type: object
+      required:
+      - type
+      - code
+      properties:
+        type:
+          description: |
+            A URI reference [RFC3986] that identifies the problem type.
+            Remark For Future: These URI will be provided by NextGenPSD2 in future.
+          type: string
+          format: uri
+          maxLength: 70
+        title:
+          description: |
+            Short human-readable description of error type.
+            Could be in local language.
+            To be provided by ASPSPs.
+          type: string
+          maxLength: 70
+        detail:
+          description: |
+            Detailed human-readable text specific to this instance of the error.
+            XPath might be used to point to the issue generating the error in addition.
+            Remark for Future: In the future, a dedicated field might be introduced for the XPath.
+          type: string
+          maxLength: 500
+        code:
+          $ref: '#/components/schemas/MessageCode409_PIS'
+        additionalErrors:
+          description: |
+            Array of Error Information Blocks.
+
+            Might be used if more than one error is to be communicated
+          type: array
+          items:
+            description: This is a data element to support the declaration of additional errors in the context of
+              [RFC7807].
+            type: object
+            required:
+            - code
+            properties:
+              title:
+                $ref: '#/components/schemas/clientErrorTitle'
+              detail:
+                $ref: '#/components/schemas/clientErrorDetail'
+              code:
+                $ref: '#/components/schemas/MessageCode409_PIS'
+        _links:
+          $ref: '#/components/schemas/linksAll'
     Error429_AIS:
       description: |
         Standardised definition of reporting error information according to [RFC7807]
@@ -884,6 +1560,17 @@ components:
       - category: ERROR
         code: ACCESS_EXCEEDED
         text: additional text information of the ASPSP up to 500 characters
+    MessageCode200InitiationStatus:
+      description: Message codes for HTTP codes 200 to a Payment Initiation Status Request.
+      type: string
+      enum:
+      - FUNDS_NOT_AVAILABLE
+    MessageCode201PaymentInitiation:
+      description: Message codes for HTTP Codes 201 to a Payment Initiation Request.
+      type: string
+      enum:
+      - WARNING
+      - BENEFICIARY_WHITELISTING_REQUIRED
     MessageCode400_AIS:
       description: Message codes defined for AIS for HTTP Error code 400 (BAD_REQUEST).
       type: string
@@ -902,6 +1589,24 @@ components:
       - SCA_INVALID
       - CONSENT_TYPE_NOT_SUPPORTED
       - SESSIONS_NOT_SUPPORTED
+    MessageCode400_PIS:
+      description: Message codes defined for PIS for HTTP Error code 400 (BAD_REQUEST).
+      type: string
+      enum:
+      - FORMAT_ERROR
+      - PARAMETER_NOT_CONSISTENT
+      - PARAMETER_NOT_SUPPORTED
+      - SERVICE_INVALID
+      - CONSENT_UNKNOWN
+      - RESOURCE_UNKNOWN
+      - RESOURCE_EXPIRED
+      - RESOURCE_BLOCKED
+      - TIMESTAMP_INVALID
+      - PERIOD_INVALID
+      - SCA_METHOD_UNKNOWN
+      - SCA_INVALID
+      - PAYMENT_FAILED
+      - EXECUTION_DATE_INVALID
     MessageCode401_AIS:
       description: Message codes defined for AIS for HTTP Error code 401 (UNAUTHORIZED).
       type: string
@@ -921,6 +1626,26 @@ components:
       - TOKEN_UNKNOWN
       - TOKEN_INVALID
       - TOKEN_EXPIRED
+    MessageCode401_PIS:
+      description: Message codes defined for PIS for HTTP Error code 401 (UNAUTHORIZED).
+      type: string
+      enum:
+      - CERTIFICATE_INVALID
+      - ROLE_INVALID
+      - CERTIFICATE_EXPIRED
+      - CERTIFICATE_BLOCKED
+      - CERTIFICATE_REVOKED
+      - CERTIFICATE_MISSING
+      - SIGNATURE_INVALID
+      - SIGNATURE_MISSING
+      - PSU_CREDENTIALS_INVALID
+      - CORPORATE_ID_INVALID
+      - CONSENT_INVALID
+      - CONSENT_EXPIRED
+      - TOKEN_UNKNOWN
+      - TOKEN_INVALID
+      - TOKEN_EXPIRED
+      - KID_MISSING
     MessageCode403_AIS:
       description: Message codes defined for AIS for HTTP Error code 403 (FORBIDDEN).
       type: string
@@ -929,16 +1654,42 @@ components:
       - CONSENT_UNKNOWN
       - RESOURCE_UNKNOWN
       - RESOURCE_EXPIRED
+    MessageCode403_PIS:
+      description: Message codes defined defined for PIS for PIS for HTTP Error code 403 (FORBIDDEN).
+      type: string
+      enum:
+      - SERVICE_BLOCKED
+      - CONSENT_UNKNOWN
+      - RESOURCE_UNKNOWN
+      - RESOURCE_EXPIRED
+      - PRODUCT_INVALID
     MessageCode404_AIS:
       description: Message codes defined for AIS for HTTP Error code 404 (NOT FOUND).
       type: string
       enum:
       - RESOURCE_UNKNOWN
+    MessageCode404_PIS:
+      description: Message codes defined for PIS for HTTP Error code 404 (NOT FOUND).
+      type: string
+      enum:
+      - RESOURCE_UNKNOWN
+      - PRODUCT_UNKNOWN
     MessageCode405_AIS:
       description: Message codes defined for AIS for HTTP Error code 405 (METHOD NOT ALLOWED).
       type: string
       enum:
       - SERVICE_INVALID
+    MessageCode405_PIS:
+      description: Message codes defined for payment cancellations PIS for HTTP Error code 405 (METHOD NOT ALLOWED).
+      type: string
+      enum:
+      - SERVICE_INVALID
+    MessageCode405_PIS_CANC:
+      description: Message codes defined for payment cancellations PIS for HTTP Error code 405 (METHOD NOT ALLOWED).
+      type: string
+      enum:
+      - SERVICE_INVALID
+      - CANCELLATION_INVALID
     MessageCode406_AIS:
       description: Message codes defined for AIS for HTTP Error code 406 (NOT ACCEPTABLE).
       type: string
@@ -946,6 +1697,11 @@ components:
       - REQUESTED_FORMATS_INVALID
     MessageCode409_AIS:
       description: Message codes defined for AIS for HTTP Error code 409 (CONFLICT).
+      type: string
+      enum:
+      - STATUS_INVALID
+    MessageCode409_PIS:
+      description: Message codes defined for PIS for HTTP Error code 409 (CONFLICT).
       type: string
       enum:
       - STATUS_INVALID
@@ -1305,6 +2061,30 @@ components:
           $ref: '#/components/schemas/currencyCode'
         proxy:
           $ref: '#/components/schemas/proxyAccountIdentification'
+    accountReference1:
+      type: object
+      properties:
+        iban:
+          $ref: '#/components/schemas/iban'
+        bban:
+          $ref: '#/components/schemas/bban'
+        pan:
+          $ref: '#/components/schemas/pan'
+        maskedPan:
+          $ref: '#/components/schemas/maskedPan'
+        currency:
+          $ref: '#/components/schemas/currencyCode'
+    accountReference3:
+      type: object
+      properties:
+        iban:
+          $ref: '#/components/schemas/iban'
+        bban:
+          $ref: '#/components/schemas/bban'
+        other:
+          $ref: '#/components/schemas/genericAccountIdentification'
+        currency:
+          $ref: '#/components/schemas/currencyCode'
     accountStatus:
       description: |
         Account status. The value is one of the following:
@@ -1317,6 +2097,17 @@ components:
       - enabled
       - deleted
       - blocked
+    addressLine:
+      type: string
+      maxLength: 140
+    agentDescription1:
+      description: Proprietary identifications might be provided under financialInstitutionId/other
+      type: object
+      required:
+      - financialInstitutionId
+      properties:
+        financialInstitutionId:
+          $ref: '#/components/schemas/financialInstitutionIdentification'
     amount:
       type: object
       required:
@@ -1578,8 +2369,67 @@ components:
             e.g. fallback mechanism for the chosen SCA method.
             The TPP is obliged to show this to the PSU.
           type: string
+    chargeBearer:
+      description: This is following ChargeBearerType1Code from ISO20022.
+      type: string
+      enum:
+      - DEBT
+      - CRED
+      - SHAR
+      - SLEV
     chosenScaMethod:
       $ref: '#/components/schemas/authenticationObject'
+    clearingSystemIdentificationCode:
+      description: |
+        Identification of a clearing system, in a coded form, following ExternalClearingSystemIdentification1Code from
+        ISO20022.
+      type: string
+      enum:
+      - ATBLZ
+      - AUBSB
+      - CACPA
+      - CHBCC
+      - CHSIC
+      - CNAPS
+      - DEBLZ
+      - ESNCC
+      - GBDSC
+      - GRBIC
+      - HKNCC
+      - IENCC
+      - INFSC
+      - ITNCC
+      - JPZGN
+      - NZNCC
+      - PLKNR
+      - PTNCC
+      - RUCBC
+      - SESBA
+      - SGIBG
+      - THCBC
+      - TWNCC
+      - USABA
+      - USPID
+      - ZANCC
+      - NZRSA
+      - MZBMO
+      - CNCIP
+      - KRBOK
+    clearingSystemMemberIdentification:
+      description: Information used to identify a member within a clearing system.
+      type: object
+      properties:
+        memberId:
+          description: Identification of a member of a clearing system.
+          type: string
+          maxLength: 35
+        clearingSystemIdentificationCode:
+          $ref: '#/components/schemas/clearingSystemIdentificationCode'
+        clearingSystemIdentificationProprietary:
+          description: Identification code for a clearing system, that has not yet been identified in the list of
+            clearing systems.
+          type: string
+          maxLength: 35
     clientErrorDetail:
       description: |
         Detailed human-readable text specific to this instance of the error.
@@ -1594,6 +2444,20 @@ components:
         To be provided by ASPSPs.
       type: string
       maxLength: 70
+    clientMessage201PaymentInitiation:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode201PaymentInitiation'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
     clientMessage400_AIS:
       type: object
       required:
@@ -1604,6 +2468,20 @@ components:
           $ref: '#/components/schemas/clientMessageCategory'
         code:
           $ref: '#/components/schemas/MessageCode400_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage400_PIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode400_PIS'
         path:
           type: string
         text:
@@ -1622,6 +2500,20 @@ components:
           type: string
         text:
           $ref: '#/components/schemas/clientMessageText'
+    clientMessage401_PIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode401_PIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
     clientMessage403_AIS:
       type: object
       required:
@@ -1632,6 +2524,20 @@ components:
           $ref: '#/components/schemas/clientMessageCategory'
         code:
           $ref: '#/components/schemas/MessageCode403_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage403_PIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode403_PIS'
         path:
           type: string
         text:
@@ -1650,6 +2556,20 @@ components:
           type: string
         text:
           $ref: '#/components/schemas/clientMessageText'
+    clientMessage404_PIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode404_PIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
     clientMessage405_AIS:
       type: object
       required:
@@ -1660,6 +2580,34 @@ components:
           $ref: '#/components/schemas/clientMessageCategory'
         code:
           $ref: '#/components/schemas/MessageCode405_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage405_PIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode405_PIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage405_PIS_CANC:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode405_PIS_CANC'
         path:
           type: string
         text:
@@ -1688,6 +2636,20 @@ components:
           $ref: '#/components/schemas/clientMessageCategory'
         code:
           $ref: '#/components/schemas/MessageCode409_AIS'
+        path:
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessage409_PIS:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode409_PIS'
         path:
           type: string
         text:
@@ -1725,6 +2687,20 @@ components:
         path:
           description: |
             Path of the element of the request message which provoked the error message, if applicable
+          type: string
+        text:
+          $ref: '#/components/schemas/clientMessageText'
+    clientMessageInitiationStatusResponse-200:
+      type: object
+      required:
+      - category
+      - code
+      properties:
+        category:
+          $ref: '#/components/schemas/clientMessageCategory'
+        code:
+          $ref: '#/components/schemas/MessageCode200InitiationStatus'
+        path:
           type: string
         text:
           $ref: '#/components/schemas/clientMessageText'
@@ -1795,6 +2771,11 @@ components:
       - detailed
       - aspspManaged
       - accountList
+    countryCode:
+      description: ISO 3166 ALPHA2 country code.
+      type: string
+      pattern: '[A-Z]{2}'
+      example: SE
     currencyCode:
       description: |
         ISO 4217 Alpha 3 currency code.
@@ -1806,6 +2787,31 @@ components:
         Name of the account as defined by the PSU within online channels.
       type: string
       maxLength: 70
+    financialInstitutionIdentification:
+      description: |
+        Originator payment service provider in case of indirect participation regarding a related API Access Scheme or
+        bilateral contract
+      type: object
+      properties:
+        bicfi:
+          $ref: '#/components/schemas/bicfi'
+        clearingSystemMemberId:
+          $ref: '#/components/schemas/clearingSystemMemberIdentification'
+        name:
+          description: Name of the financial institution
+          type: string
+          maxLength: 140
+        postalAddress:
+          $ref: '#/components/schemas/postalAddress'
+        other:
+          $ref: '#/components/schemas/genericFinancialInstitutionIdentification'
+    financialInstitutionIdentificationCode:
+      description: |
+        Specifies the external financial institution identification scheme name code in the format of
+        character string with a maximum length of 4 characters.(ExternalFinancialInstitutionIdentification1Code).
+      type: string
+      minLength: 1
+      maxLength: 4
     frequencyPerDay:
       description: |
         This field indicates the requested maximum frequency for an access without PSU involvement per day.
@@ -1818,6 +2824,15 @@ components:
       example: 4
       minimum: 1
       exclusiveMinimum: false
+    fundsAvailable:
+      description: |
+        Equals true if sufficient funds are available at the time of the request, false otherwise.
+
+        This data element is allways contained in a confirmation of funds response.
+
+        This data element is contained, if supported by the ASPSP, if a funds check has been performed and if
+        the transactionStatus is "ACTC", "ACWC" or "ACCP".
+      type: boolean
     genericAccountIdentification:
       type: object
       required:
@@ -1830,6 +2845,26 @@ components:
           maxLength: 35
         schemeNameCode:
           $ref: '#/components/schemas/accountIdentificationCode'
+        schemeNameProprietary:
+          description: A scheme name defined in a proprietary way.
+          type: string
+          maxLength: 35
+        issuer:
+          description: Issuer of the identification.
+          type: string
+          maxLength: 35
+    genericFinancialInstitutionIdentification:
+      type: object
+      required:
+      - identification
+      properties:
+        identification:
+          description: |
+            Unique and unambiguous identification of a financial insitution.
+          type: string
+          maxLength: 35
+        schemeNameCode:
+          $ref: '#/components/schemas/financialInstitutionIdentificationCode'
         schemeNameProprietary:
           description: A scheme name defined in a proprietary way.
           type: string
@@ -2034,6 +3069,103 @@ components:
           $ref: '#/components/schemas/hrefType'
         card-account:
           $ref: '#/components/schemas/hrefType'
+    linksPaymentInitiation:
+      description: |
+        A list of hyperlinks to be recognised by the TPP.
+        The actual hyperlinks used in the response depend on the dynamical decisions of the ASPSP when
+        processing the request.
+
+        **Remark:** All links can be relative or full links, to be decided by the ASPSP.
+
+        Type of links admitted in this response, (further links might be added for ASPSP defined extensions):
+
+        * 'scaRedirect':
+          In case of an SCA Redirect Approach, the ASPSP is transmitting the link to which to redirect the PSU browser.
+        * 'scaOAuth':
+          In case of a SCA OAuth2 Approach, the ASPSP is transmitting the URI where the configuration of the
+          Authorisation  erver can be retrieved. The configuration follows the OAuth 2.0 Authorisation Server
+          Metadata specification.
+        * 'confirmation':
+          Might be added by the ASPSP if either the "scaRedirect" or "scaOAuth" hyperlink is returned
+          in the same response message.
+          This hyperlink defines the URL to the resource which needs to be updated with
+            * a confirmation code as retrieved after the plain redirect authentication process with the ASPSP
+            authentication server or
+            * an access token as retrieved by submitting an authorisation code after the integrated OAuth based
+            authentication process with the ASPSP authentication server.
+        * 'startAuthorisation':
+          In case, where an explicit start of the transaction authorisation is needed, but no more data needs to be
+          updated (no authentication method to be selected, no PSU identification nor PSU authentication data to
+          be uploaded).
+        * 'startAuthorisationWithPsuIdentification':
+          The link to the authorisation end-point, where the authorisation sub-resource has to be generated while
+          uploading the PSU identification data.
+        * 'startAuthorisationWithPsuAuthentication':
+          The link to the authorisation end-point, where the authorisation sub-resource has to be generated while
+          uploading the PSU authentication data.
+          * 'startAuthorisationWithEncryptedPsuAuthentication':
+            Same as startAuthorisactionWithPsuAuthentication where the authentication data need to be encrypted on
+            application layer in uploading.
+        * 'startAuthorisationWithAuthenticationMethodSelection':
+          The link to the authorisation end-point, where the authorisation sub-resource has to be generated while
+          selecting the authentication method.
+          This link is contained under exactly the same conditions as the data element "scaMethods"
+        * 'startAuthorisationWithTransactionAuthorisation':
+          The link to the authorisation end-point, where the authorisation sub-resource has to be generated while
+          authorising the transaction e.g. by uploading an OTP received by SMS.
+        * 'self':
+          The link to the payment initiation resource created by this request.
+          This link can be used to retrieve the resource data.
+        * 'status':
+          The link to retrieve the transaction status of the payment initiation.
+        * 'scaStatus':
+          The link to retrieve the scaStatus of the corresponding authorisation sub-resource.
+          This link is only contained, if an authorisation sub-resource has been already created.
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/hrefType'
+      properties:
+        scaRedirect:
+          $ref: '#/components/schemas/hrefType'
+        scaOAuth:
+          $ref: '#/components/schemas/hrefType'
+        confirmation:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisation:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithPsuIdentification:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithEncryptedPsuAuthentication:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithAuthenticationMethodSelection:
+          $ref: '#/components/schemas/hrefType'
+        startAuthorisationWithTransactionAuthorisation:
+          $ref: '#/components/schemas/hrefType'
+        self:
+          $ref: '#/components/schemas/hrefType'
+        status:
+          $ref: '#/components/schemas/hrefType'
+        scaStatus:
+          $ref: '#/components/schemas/hrefType'
+      example:
+        scaRedirect:
+          href: https://www.testbank.com/asdfasdfasdf
+        self:
+          href: /v2/payments/sepa-credit-transfers/1234-wertiq-983
+    linksPaymentInitiationStatus:
+      description: |
+        Should refer to next steps if the problem can be resolved via the interface e.g. for re-submission of
+        credentials.
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/hrefType'
+      example:
+        scaRedirect:
+          href: https://www.testbank.com/asdfasdfasdf
+        self:
+          href: /v2/payments/sepa-credit-transfers/1234-wertiq-983
     maskedPan:
       description: |
         Masked Primary Account Number.
@@ -2070,6 +3202,331 @@ components:
       type: string
       maxLength: 35
       example: '5409050000000000'
+    partyDescription1:
+      type: object
+      properties:
+        name:
+          description: Name of the party.
+          type: string
+          maxLength: 140
+    paymentId:
+      description: Resource identification of the generated payment initiation resource.
+      type: string
+      example: 1234-wertiq-983
+    paymentIdentification1:
+      type: object
+      properties:
+        endToEndId:
+          description: |
+            Unique identification assigned by the initiating party to unambiguously identify the transaction.
+            This identification is passed on, unchanged, throughout the entire end-to-end chain.
+          type: string
+          maxLength: 35
+    paymentInitiationRequestResponse-201:
+      description: Body of the response for a successful payment initiation request.
+      type: object
+      required:
+      - transactionStatus
+      - paymentId
+      - _links
+      properties:
+        transactionStatus:
+          $ref: '#/components/schemas/transactionStatus'
+        paymentId:
+          $ref: '#/components/schemas/paymentId'
+        transactionFees:
+          $ref: '#/components/schemas/amount'
+        currencyConversionFee:
+          $ref: '#/components/schemas/amount'
+        estimatedTotalAmount:
+          $ref: '#/components/schemas/amount'
+        estimatedInterbankSettlementAmount:
+          $ref: '#/components/schemas/amount'
+        transactionFeeIndicator:
+          $ref: '#/components/schemas/transactionFeeIndicator'
+        scaMethods:
+          $ref: '#/components/schemas/scaMethods'
+        chosenScaMethod:
+          $ref: '#/components/schemas/chosenScaMethod'
+        challengeData:
+          $ref: '#/components/schemas/challenge'
+        _links:
+          $ref: '#/components/schemas/linksPaymentInitiation'
+        psuMessage:
+          $ref: '#/components/schemas/psuMessageText'
+        apiClientMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessage201PaymentInitiation'
+    paymentInitiationStatusResponse-200_json:
+      description: |
+        Body of the response for a successful payment initiation status request in case of an JSON based
+        endpoint. *Remark:* If the PSU does not complete a required SCA within the required timeframe the payment
+        resource's status must be set to "RJCT". Particularly, if a multi-level-SCA is required and the number of
+        successful SCAs during the required timeframe is insufficient, the status must also be set to "RJCT".
+      type: object
+      required:
+      - transactionStatus
+      properties:
+        transactionStatus:
+          $ref: '#/components/schemas/transactionStatus'
+        reasonCode:
+          $ref: '#/components/schemas/statusReasonCode'
+        reasonProprietary:
+          description: |
+            Proprietary additional information on the reason for e.g. rejecting the request.
+            Remark: If an ISO Code is available it should be used instead of Proprietary Reasons. Further restrictions
+            could be defined by API Access Schemes.
+          type: string
+          maxLength: 35
+        fundsAvailable:
+          $ref: '#/components/schemas/fundsAvailable'
+        transactionFees:
+          $ref: '#/components/schemas/amount'
+        currencyConversionFees:
+          $ref: '#/components/schemas/amount'
+        estimatedTotalAmount:
+          $ref: '#/components/schemas/amount'
+        estimatedInterbankSettlementAmount:
+          $ref: '#/components/schemas/amount'
+        psuMessage:
+          $ref: '#/components/schemas/psuMessageText'
+        ownerNames:
+          description: |
+            List of owner names. Should only be delivered after successful SCA. Could be restricted to the current PSU
+            by the ASPSP.
+          type: array
+          items:
+            $ref: '#/components/schemas/accountOwner'
+        _links:
+          $ref: '#/components/schemas/linksPaymentInitiationStatus'
+        apiClientMessages:
+          description: Messages to the TPP on operational issues.
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessageInformation'
+    paymentInitiationWithStatusResponse:
+      description: |
+        Generic JSON response body consisting of the corresponding payment initiation JSON body together with an
+        optional transaction status field.
+      type: object
+      required:
+      - debtorAccount
+      - instructedAmount
+      - creditorAccount
+      - creditor
+      properties:
+        paymentIdentification:
+          $ref: '#/components/schemas/paymentIdentification1'
+        chargeBearer:
+          $ref: '#/components/schemas/chargeBearer'
+        debtorAccount:
+          $ref: '#/components/schemas/accountReference1'
+        chargesAccount:
+          $ref: '#/components/schemas/accountReference3'
+        instructedAmount:
+          $ref: '#/components/schemas/amount'
+        intermediaryAgent1:
+          $ref: '#/components/schemas/agentDescription1'
+        intermediaryAgent2:
+          $ref: '#/components/schemas/agentDescription1'
+        creditorAccount:
+          $ref: '#/components/schemas/accountReference1'
+        creditorAgent:
+          $ref: '#/components/schemas/agentDescription1'
+        creditor:
+          $ref: '#/components/schemas/partyDescription1'
+        ultimateCreditor:
+          description: |
+            Not offered by the bank: a payment initiation naming an ultimate creditor is refused with
+            PARAMETER_NOT_SUPPORTED.
+          type: object
+        remittanceInformationUnstructured:
+          $ref: '#/components/schemas/remittanceInformationUnstructured'
+        transactionStatus:
+          $ref: '#/components/schemas/transactionStatus'
+        apiClientMessages:
+          type: array
+          items:
+            $ref: '#/components/schemas/clientMessageInitiationStatusResponse-200'
+    paymentInitiation_json:
+      description: |
+        Generic Body for a payment initiation via JSON.
+
+        This generic JSON body can be used to represent valid payment initiations for the following JSON based payment
+        product, which where defined in the Implementation Guidelines:
+
+          * sepa-credit-transfers
+          * instant-sepa-credit-transfers
+          * target-2-payments
+          * cross-border-credit-transfers
+
+        For the convenience of the implementer additional which are already predefined in the Implementation Guidelines
+        are included (but commented in source code), such that an ASPSP may add them easily.
+
+        Take care: Since the format is intended to fit for all payment products
+        there are additional conditions which are NOT covered by this specification.
+        Please check the Implementation Guidelines for details.
+
+
+        The following data element are depending on the actual payment product available (in source code):
+
+         <table style="width:100%">
+         <tr><th>Data Element</th><th>SCT EU Core</th><th>SCT INST EU Core</th><th>Target2 Paym. Core</th><th>Cross Border CT Core</th></tr>
+         <tr><td>paymentIdentification</td><td> optional</td> <td>optional</td> <td>optional</td> <td>n.a.</td> </tr>
+         <tr><td>instructionPriority</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>serviceLevelCode</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a. </td> </tr>
+         <tr><td>localInstrumentCode</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a. </td> </tr>
+         <tr><td>localInstrumentProprietary</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a. </td> </tr>
+         <tr><td>categoryPurposeCode</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>categoryPurposeProprietary</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>chargeBearer</td> <td>n.a.</td> <td>n.a.</td> <td>optional</td> <td>conditional </td> </tr>
+         <tr><td>debtorAccount</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> </tr>
+         <tr><td>chargesAccount</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>optional</td> </tr>
+         <tr><td>debtorName</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>ultimateDebtor</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>instructedAmount</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> </tr>
+         <tr><td>currencyOfTransfer</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>exchangeRateInformation</td> <td>n.a.</td> <td>n.a.</td><td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>intermediaryAgent1</td> <td>n.a.</td> <td>n.a.</td><td>n.a.</td> <td>optional</td> </tr>
+         <tr><td>intermediaryAgent2</td> <td>n.a.</td> <td>n.a.</td><td>n.a.</td> <td>conditional </td> </tr>
+         <tr><td>creditorAccount</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> </tr>
+         <tr><td>creditorAgent</td> <td>optional</td> <td>optional</td> <td>optional</td> <td>conditional </td> </tr>
+         <tr><td>creditor</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> <td>mandatory</td> </tr>
+         <tr><td>ultimateCreditor</td> <td>optional</td> <td>optional</td> <td>optional</td> <td>optional</td> </tr>
+         <tr><td>purposeCode</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>purposeProprietary</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>remittanceInformationUnstructured</td> <td>optional</td> <td>optional</td> <td> optional</td> <td>optional</td> </tr>
+         <tr><td>remittanceInformationStructured</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>enclosedFile</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>requestedExecutionDate</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>requestedExecutionDateTime</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>regularyReporting</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+         <tr><td>additionalRequestedInformation</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> <td>n.a.</td> </tr>
+            </td></tr>
+          </table>
+
+        IMPORTANT: In this API definition the following holds:
+          *  All data elements mentioned above are defined, but some of them are commented,
+            i.e. they are only visible in the source code and can be used by uncommenting them.
+          * Data elements which are mandatory in the table above for all payment products
+            are set to be mandatory in this specification.
+          * Data elements which are indicated in the table above as n.a. for all payment products are commented in the
+            source code.
+          * Data elements which are indicated to be option, conditional or mandatory for at least one payment product
+            in the table above are set to be optional in the s specification except the case where all are defined to
+            be mandatory.
+          * Data element which are indicated to be n.a. can be used by the ASPS if needed.
+            In this case uncomment the the related lines in the source code.
+          * If one uses this data types for some payment products he has to ensure that the used data type is
+            valid according to the underlying payment product, e.g. by some appropriate validations.
+      type: object
+      required:
+      - debtorAccount
+      - instructedAmount
+      - creditorAccount
+      - creditor
+      properties:
+        paymentIdentification:
+          $ref: '#/components/schemas/paymentIdentification1'
+        chargeBearer:
+          $ref: '#/components/schemas/chargeBearer'
+        debtorAccount:
+          $ref: '#/components/schemas/accountReference1'
+        chargesAccount:
+          $ref: '#/components/schemas/accountReference3'
+        instructedAmount:
+          $ref: '#/components/schemas/amount'
+        intermediaryAgent1:
+          $ref: '#/components/schemas/agentDescription1'
+        intermediaryAgent2:
+          $ref: '#/components/schemas/agentDescription1'
+        creditorAccount:
+          $ref: '#/components/schemas/accountReference1'
+        creditorAgent:
+          $ref: '#/components/schemas/agentDescription1'
+        creditor:
+          $ref: '#/components/schemas/partyDescription1'
+        ultimateCreditor:
+          description: |
+            Not offered by the bank: a payment initiation naming an ultimate creditor is refused with
+            PARAMETER_NOT_SUPPORTED.
+          type: object
+        remittanceInformationUnstructured:
+          $ref: '#/components/schemas/remittanceInformationUnstructured'
+    postalAddress:
+      type: object
+      properties:
+        addressLines:
+          description: |
+            At most seven entries are permitted. May only be used, if none of the structured address elements
+            "streetName", "buildingNumber", "postcode" or "townName" is used.
+            Remark: For SEPA transactions this is further restricted to a maximum of 1 entry.
+          type: array
+          items:
+            $ref: '#/components/schemas/addressLine'
+        department:
+          description: |
+            Identification of a division of a large organisation or building.
+          type: string
+          maxLength: 70
+        subDepartment:
+          description: |
+            Identification of a sub-division of a large organisation or building.
+          type: string
+          maxLength: 70
+        streetName:
+          description: Name of a street or thoroughfare.
+          type: string
+          maxLength: 70
+        buildingNumber:
+          description: Number that identifies the position of a building on a street.
+          type: string
+          maxLength: 16
+        buildingName:
+          description: Name of the building or house.
+          type: string
+          maxLength: 35
+        floor:
+          description: Floor or storey within a building.
+          type: string
+          maxLength: 70
+        postBox:
+          description: |
+            Numbered box in a post office, assigned to a person or organisation, where letters are kept until
+            called for.
+          type: string
+          maxLength: 16
+        room:
+          description: Building room number.
+          type: string
+          maxLength: 70
+        postCode:
+          description: |
+            Identifier consisting of a group of letters and/or numbers that is added to a postal address to assist the
+            sorting of mail.
+          type: string
+          maxLength: 16
+        townName:
+          description: |
+            Name of a built-up area, with defined boundaries, and a local government.
+            Usage Rule: If address lines are not used, this attribute is mandatrory.
+          type: string
+          maxLength: 35
+        townLocationName:
+          description: Specific location name within the town.
+          type: string
+          maxLength: 35
+        districtName:
+          description: Identifies a subdivision within a country sub-division.
+          type: string
+          maxLength: 35
+        countrySubDivision:
+          description: Identifies a subdivision of a country such as state, region, county.
+          type: string
+          maxLength: 35
+        country:
+          $ref: '#/components/schemas/countryCode'
     proxyAccountIdentification:
       type: object
       required:
@@ -2131,6 +3588,11 @@ components:
         "false", if the consent is for one access to the account data.
       type: boolean
       example: false
+    remittanceInformationUnstructured:
+      description: |
+        Unstructured remittance information.
+      type: string
+      maxLength: 140
     scaMethods:
       description: |
         This data element might be contained, if SCA is required and if the PSU has a choice between different
@@ -2146,6 +3608,109 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/authenticationObject'
+    statusReasonCode:
+      description: |
+        At a minimum, the following codes from the ISO20022 ExternalStatusReasonCode1 list need to be supported by the
+        ASPSP. The codes should only used, if a related resource hase been generated on API level, i.e. if a transaction
+        status can be provided.
+        Otherwise a related Message Code to be used in Error information would be sufficient.
+        - AM04 "InsufficientFunds": Amount of funds available to cover specified message amount is insufficient.
+          Remark: Indicates that the reason for rejecting the payment is that the required funds have been found to be
+          not available for the specific (e.g due to missing funds or due to configured limits) during processing after
+          the initial acceptance of the payment initiation.
+        - DS0C "SignerCertificateRevoked": The signer certificate is revoked.
+          Remark: Is used, if the signature/corporate seal certificate is revoked.
+        - DS0D "SignerCertificateNotValid": The signer certificate is not valid (revoked or not active).
+          Remark: Is used, if the signature/corporate seal certificate is blocked by the ASPSP or if the certificate is
+          expired.
+        - DS0A "DataSignRequested": Data signature is required.
+          Remark: Is used, if a signing by a corporate seal/certificate is mandated by the ASPSP but is missing.
+        - DS04 "OrderRejected": The order was rejected by the bank side (for reasons concerning content)
+          Remark: Indicates that the reason for rejecting the payment is that the content of the payment initiation has
+          been found invalid during processing after the initial acceptance of the payment initiation.
+        - SL11 "CreditorNotOnWhitelistOfDebtor": Whitelisting service offered by the Debtor Agent; Debtor has not
+          included the Creditor on its “Whitelist” (yet).
+          In the Whitelist the Debtor may list all allowed Creditors to debit Debtor bank account.
+      type: string
+      enum:
+      - AM04
+      - DS0C
+      - DS0D
+      - DS0A
+      - DS04
+      - SL11
+    transactionFeeIndicator:
+      description: |
+        If equals 'true', the transaction will involve specific transaction cost as shown by the ASPSP in
+        their public price list or as agreed between ASPSP and PSU.
+        If equals 'false', the transaction will not involve additional specific transaction costs to the PSU unless the
+        fee amount is given specifically in the data elements transactionFees and/or currencyConversionFees.
+        If this data element is not used, there is no information about transaction fees unless the fee amount is given
+        explicitly in the data element transactionFees and/or currencyConversionFees.
+      type: boolean
+    transactionStatus:
+      description: |
+        The transaction status is filled with codes of the ISO20022 data table:
+        - 'ACCC': 'AcceptedSettlementCompleted' -
+          Settlement on the creditor's account has been completed.
+        - 'ACCP': 'AcceptedCustomerProfile' -
+          Preceding check of technical validation was successful.
+          Customer profile check was also successful.
+        - 'ACSC': 'AcceptedSettlementCompleted' -
+          Settlement on the debtor�s account has been completed.
+
+          **Usage:** this can be used by the first agent to report to the debtor that the transaction has been
+          completed.
+
+          **Warning:** this status is provided for transaction status reasons, not for financial information.
+          It can only be used after bilateral agreement.
+        - 'ACSP': 'AcceptedSettlementInProcess' -
+          All preceding checks such as technical validation and customer profile were successful and therefore the
+          payment initiation has been accepted for execution.
+        - 'ACTC': 'AcceptedTechnicalValidation' -
+          Authentication and syntactical and semantical validation are successful.
+        - 'ACWC': 'AcceptedWithChange' -
+          Instruction is accepted but a change will be made, such as date or remittance not sent.
+        - 'ACWP': 'AcceptedWithoutPosting' -
+          Payment instruction included in the credit transfer is accepted without being posted to the creditor
+          customer's account.
+        - 'RCVD': 'Received' -
+          Payment initiation has been received by the receiving agent.
+        - 'PDNG': 'Pending' -
+          Payment initiation or individual transaction included in the payment initiation is pending.
+          Further checks and status update will be performed.
+        - 'RJCT': 'Rejected' -
+          Payment initiation or individual transaction included in the payment initiation has been rejected.
+        - 'CANC': 'Cancelled'
+          Payment initiation has been cancelled before execution
+        - 'ACFC': 'AcceptedFundsChecked' -
+          Preceding check of technical validation and customer profile was successful and an automatic funds check was
+          positive.
+        - 'PATC': 'PartiallyAcceptedTechnical'
+          Correct The payment initiation needs multiple authentications, where some but not yet all have been performed.
+          Syntactical and semantical validations are successful.
+        - 'PART': 'PartiallyAccepted' -
+          A number of transactions have been accepted, whereas another number of transactions have not yet achieved
+          'accepted' status.
+          Remark: This code may be used only in case of bulk payments. It is only used in a situation where all mandated
+          authorisations have been applied, but some payments have been rejected.
+      type: string
+      enum:
+      - ACCC
+      - ACCP
+      - ACSC
+      - ACSP
+      - ACTC
+      - ACWC
+      - ACWP
+      - RCVD
+      - PDNG
+      - RJCT
+      - CANC
+      - ACFC
+      - PATC
+      - PART
+      example: ACCP
     usage:
       description: |
         Specifies the usage of the account:
@@ -2202,7 +3767,7 @@ components:
         URI of the TPP, where the transaction flow shall be redirected to after a Redirect.
 
         bank-open-api accepts an absolute https URI only: the customer's browser goes there after their decision on
-        the bank's page (the consent's scaRedirect link).
+        the bank's page (the scaRedirect link of a consent or a payment).
 
         Mandated for the Redirect SCA Approach, specifically
         when TPP-Redirect-Preferred equals "true".
@@ -2270,6 +3835,26 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/consentId'
+    paymentId:
+      name: paymentId
+      in: path
+      description: Resource identification of the generated payment initiation resource.
+      required: true
+      schema:
+        $ref: '#/components/schemas/paymentId'
+    paymentProduct:
+      name: payment-product
+      in: path
+      description: |
+        The addressed payment product. bank-open-api offers one:
+          - domestic-credit-transfers: a credit transfer in UAH from an account at this bank to an account at any
+            bank in Ukraine, named by IBAN. A Ukrainian credit transfer states its purpose, so
+            remittanceInformationUnstructured and the creditor's name are required.
+      required: true
+      schema:
+        type: string
+        enum:
+        - domestic-credit-transfers
     withBalanceQuery:
       name: withBalance
       in: query
@@ -2295,6 +3880,20 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error400_AIS'
+    BAD_REQUEST_400_PIS:
+      description: Bad Request
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error400_NG_PIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error400_PIS'
     CONFLICT_409_AIS:
       description: Conflict
       headers:
@@ -2309,6 +3908,20 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error409_AIS'
+    CONFLICT_409_PIS:
+      description: Conflict
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error409_NG_PIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error409_PIS'
     CREATED_201_AccountAccessConsent:
       description: Created
       headers:
@@ -2324,6 +3937,19 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/accountAccessConsentResponse-201'
+    CREATED_201_PaymentInitiation:
+      description: CREATED
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+        Location:
+          $ref: '#/components/headers/Location'
+        ASPSP-SCA-Approach:
+          $ref: '#/components/headers/ASPSP-SCA-Approach'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/paymentInitiationRequestResponse-201'
     FORBIDDEN_403_AIS:
       description: Forbidden
       headers:
@@ -2338,7 +3964,28 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error403_AIS'
+    FORBIDDEN_403_PIS:
+      description: Forbidden
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error403_NG_PIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error403_PIS'
     INTERNAL_SERVER_ERROR_500_AIS:
+      description: Internal Server Error
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    INTERNAL_SERVER_ERROR_500_PIS:
       description: Internal Server Error
       headers:
         Location:
@@ -2359,6 +4006,34 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error405_AIS'
+    METHOD_NOT_ALLOWED_405_PIS:
+      description: Method Not Allowed
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error405_NG_PIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error405_PIS'
+    METHOD_NOT_ALLOWED_405_PIS_CANC:
+      description: Method Not Allowed
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error405_NG_PIS_CANC'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error405_PIS_CANC'
     NOT_ACCEPTABLE_406_AIS:
       description: Not Acceptable
       headers:
@@ -2373,6 +4048,13 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error406_AIS'
+    NOT_ACCEPTABLE_406_PIS:
+      description: Not Acceptable
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
     NOT_FOUND_404_AIS:
       description: Not found
       headers:
@@ -2387,7 +4069,26 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error404_AIS'
+    NOT_FOUND_404_PIS:
+      description: Not found
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error404_NG_PIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error404_PIS'
     NO_CONTENT_204_Consents:
+      description: No Content
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    NO_CONTENT_204_PaymentInitiationCancel:
       description: No Content
       headers:
         X-Request-ID:
@@ -2443,6 +4144,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/consentStatusResponse-200'
+    OK_200_PaymentInitiationInformation:
+      description: OK
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/paymentInitiationWithStatusResponse'
+    OK_200_PaymentInitiationStatus:
+      description: OK
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/paymentInitiationStatusResponse-200_json'
     REQUEST_TIMEOUT_408_AIS:
       description: Request Timeout
       headers:
@@ -2450,7 +4169,21 @@ components:
           $ref: '#/components/headers/Location'
         X-Request-ID:
           $ref: '#/components/headers/X-Request-ID'
+    REQUEST_TIMEOUT_408_PIS:
+      description: Request Timeout
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
     SERVICE_UNAVAILABLE_503_AIS:
+      description: Service Unavailable
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    SERVICE_UNAVAILABLE_503_PIS:
       description: Service Unavailable
       headers:
         Location:
@@ -2471,6 +4204,13 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error429_AIS'
+    TOO_MANY_REQUESTS_429_PIS:
+      description: Too Many Requests
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
     UNAUTHORIZED_401_AIS:
       description: Unauthorized
       headers:
@@ -2485,7 +4225,28 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error401_AIS'
+    UNAUTHORIZED_401_PIS:
+      description: Unauthorized
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error401_NG_PIS'
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error401_PIS'
     UNSUPPORTED_MEDIA_TYPE_415_AIS:
+      description: Unsupported Media Type
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-Request-ID:
+          $ref: '#/components/headers/X-Request-ID'
+    UNSUPPORTED_MEDIA_TYPE_415_PIS:
       description: Unsupported Media Type
       headers:
         Location:
@@ -2539,6 +4300,14 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/accountAccessConsent'
+    paymentInitiation:
+      description: |
+        JSON request body for a single payment of the product in the path.
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/paymentInitiation_json'
   securitySchemes:
     BearerAuthOAuth:
       description: |
@@ -2551,3 +4320,4 @@ components:
           tokenUrl: https://localhost:8443/realms/bank/protocol/openid-connect/token
           scopes:
             accounts: Consents and account information
+            payments: Payment initiation

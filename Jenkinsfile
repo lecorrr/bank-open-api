@@ -1,6 +1,6 @@
 // CI for bank-open-api: compile, run every test, publish reports, build the image. With the k3d cluster
-// (DEPLOY_TO_K3D=true, see docs/cluster.md) it deploys the image and, signed in as the test provider, takes a
-// consent through the API via Traefik.
+// (DEPLOY_TO_K3D=true, see docs/cluster.md) it deploys the image and, signed in as the test provider, takes
+// consents and payments through the API via Traefik.
 pipeline {
     agent any
 
@@ -55,6 +55,22 @@ pipeline {
                         --set image.repository=${REGISTRY}/bank-open-api --set-string image.tag=${IMAGE_TAG} \
                         --rollback-on-failure --timeout 5m
                 '''
+                // Helm is done once the new pod is ready, but the old one answers on during its preStop pause,
+                // until Traefik leaves it out: the smoke test would meet both versions. Wait until only pods of
+                // this image are left.
+                sh '''
+                    deadline=$(( $(date +%s) + 120 ))
+                    while kubectl --namespace bank get pods -l app.kubernetes.io/instance=bank-open-api \
+                        -o jsonpath='{range .items[*]}{.metadata.labels.app\\.kubernetes\\.io/version}{"\\n"}{end}' \
+                        | grep -qvxF "${IMAGE_TAG}"; do
+                        if [ "$(date +%s)" -ge "$deadline" ]; then
+                            echo "Pods of another version are still there after two minutes:"
+                            kubectl --namespace bank get pods -l app.kubernetes.io/instance=bank-open-api
+                            exit 1
+                        fi
+                        sleep 2
+                    done
+                '''
             }
             post {
                 failure {
@@ -69,8 +85,9 @@ pipeline {
                 environment name: 'DEPLOY_TO_K3D', value: 'true'
             }
             steps {
-                // The way a provider comes in: k3d's load balancer, Traefik's mutual TLS, the Gateway, the route.
-                // Jenkins is on k3d's Docker network, where the load balancer listens on port 443. The test
+                // The way a provider comes in: k3d's load balancer, Traefik's mutual TLS on the API's host, the
+                // route, the rate limit. Jenkins is on k3d's Docker network, where the load balancer listens on
+                // port 443; the test keeps the bank's and the API's host names and connects there. The test
                 // provider's key and certificate, the bank's test CA and the test customer's password come from
                 // the cluster's Secrets into a folder only this build sees.
                 sh '''

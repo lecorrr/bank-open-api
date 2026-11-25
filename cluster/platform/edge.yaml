@@ -1,9 +1,11 @@
-# Traefik's TLS for the bank's Gateway. Traefik ends every connection's TLS; providers come with a client
-# certificate from the bank's test CA (mutual TLS), customers' browsers without one.
+# Traefik's TLS and middleware for the bank. Traefik ends every connection's TLS. Customers' browsers come to the
+# bank's address without a client certificate; providers call the API on its own host with a certificate from the
+# bank's test CA (mutual TLS).
 #
-# The TLS options named "default" apply to every HTTPS router, and the Gateway's routers take no others. So the
-# client certificate is checked when one is sent (VerifyClientCertIfGiven), and the services decide where one is
-# required: Keycloak to bind a token to it, bank-open-api on every call.
+# Traefik chooses the TLS options by the server name a client asks for. The options named "default" apply to every
+# name no route claims, the bank's address included, and the Gateway's routes take no others (Traefik 3.7). There a
+# certificate is checked when one is sent (VerifyClientCertIfGiven): Keycloak binds a provider's token to it. The
+# API's IngressRoute (bank-open-api's chart) claims its host with the options "providers", which require one.
 apiVersion: traefik.io/v1alpha1
 kind: TLSOption
 metadata:
@@ -20,6 +22,22 @@ spec:
     secretNames:
       - provider-ca
     clientAuthType: VerifyClientCertIfGiven
+---
+# The API's host: no connection without a certificate from the bank's CA. The rest as the default options.
+apiVersion: traefik.io/v1alpha1
+kind: TLSOption
+metadata:
+  name: providers
+  namespace: bank
+spec:
+  minVersion: VersionTLS12
+  cipherSuites:
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  clientAuth:
+    secretNames:
+      - provider-ca
+    clientAuthType: RequireAndVerifyClientCert
 ---
 # The gateway's certificate also for clients that send no server name, such as curl https://127.0.0.1:8443.
 apiVersion: traefik.io/v1alpha1
@@ -41,3 +59,32 @@ metadata:
 spec:
   passTLSClientCert:
     pem: true
+---
+# One token bucket per provider: the key is the certificate pass-client-cert has just put into the header, so a
+# provider's traffic counts against its own limit only. 10 requests a second on average, bursts of 20; a request
+# over the limit gets 429 Too Many Requests with Retry-After. Requests without a certificate share one bucket.
+# The buckets live in this Traefik's memory: a second Traefik pod would count on its own.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: provider-rate-limit
+  namespace: bank
+spec:
+  rateLimit:
+    average: 10
+    period: 1s
+    burst: 20
+    sourceCriterion:
+      requestHeaderName: X-Forwarded-Tls-Client-Cert
+---
+# What a provider's calls go through, in this order: the certificate passed on, then its rate limit.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: provider-api
+  namespace: bank
+spec:
+  chain:
+    middlewares:
+      - name: pass-client-cert
+      - name: provider-rate-limit

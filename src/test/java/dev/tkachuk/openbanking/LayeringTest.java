@@ -32,14 +32,15 @@ class LayeringTest {
             "security", Set.of("common"),
             "consents", Set.of("common", "api", "security"),
             "accounts", Set.of("common", "bankcore", "consents", "api", "security"),
-            "approval", Set.of("common", "bankcore", "consents", "security"));
+            "payments", Set.of("common", "bankcore", "api", "security"),
+            "approval", Set.of("common", "bankcore", "consents", "payments", "security"));
 
     // Which packages alone may use a kind of outside access or framework: HTTP calls (bank-core from bankcore,
     // Keycloak from security), SQL, and Spring Security, which the other packages see only as AuthenticatedProvider
     // and SignedInCustomer.
     private static final Map<String, Set<String>> ONLY_PACKAGES_USING = Map.of(
             "org.springframework.web.client.", Set.of("bankcore", "security"),
-            "org.springframework.jdbc.", Set.of("consents"),
+            "org.springframework.jdbc.", Set.of("consents", "payments"),
             "org.springframework.security.", Set.of("security"));
 
     private static List<SourceFile> sources;

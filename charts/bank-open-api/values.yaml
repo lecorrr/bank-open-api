@@ -12,9 +12,12 @@ service:
 bankCore:
   url: http://bank-core:8080
 
-# The address providers and customers use: the links the bank hands out start with it (scaRedirect, the sign-in's
-# redirect URI, the resource in RFC 9728's metadata).
+# The bank's address, where customers' browsers open its pages: scaRedirect links and the sign-in's redirect URI
+# start with it.
 publicUrl: https://localhost:8443
+# The API's own host, where Traefik asks for the provider's client certificate in the TLS handshake. RFC 9728's
+# resource starts with it, and the API's route (templates/ingressroute.yaml) takes its host name from it.
+apiUrl: https://api.localhost:8443
 
 database:
   url: jdbc:postgresql://postgres:5432/openbanking
@@ -34,20 +37,27 @@ customerSignIn:
   # Secret with the key client-secret; scripts/cluster-up.sh creates it, and Keycloak's chart reads the same one.
   existingSecret: bank-approval-client
 
-# The routes from the bank's Gateway (made by scripts/cluster-up.sh) to this service, over HTTPS only.
+# The routes into this service, over HTTPS only (Traefik's TLS and middleware: cluster/platform/edge.yaml).
 route:
   enabled: true
+  # The customer pages and the sign-in's two steps, through the bank's Gateway (made by scripts/cluster-up.sh) on
+  # the bank's address, where browsers come without a client certificate.
   gateway: bank-gateway
   listener: websecure
-  # The API, with the provider's client certificate passed on by Traefik's middleware (cluster/platform/edge.yaml).
-  apiPathPrefix: /v2
-  clientCertificateMiddleware: pass-client-cert
-  # The customer pages, the sign-in's two steps and RFC 9728's metadata: no client certificate there.
   pagePathPrefixes:
     - /customer
     - /oauth2/authorization
     - /login/oauth2/code
-    - /.well-known/oauth-protected-resource
+  # The API and RFC 9728's metadata, on the host of apiUrl: a Traefik IngressRoute, because in Traefik 3.7 every
+  # Gateway listener takes the TLS options named default, and only an IngressRoute can name its own.
+  api:
+    entryPoint: websecure
+    # The gateway's certificate, which also carries the API's host name.
+    tlsSecret: bank-gateway-tls
+    # A client certificate from the bank's CA is required in the handshake.
+    tlsOptions: providers
+    # The provider's certificate passed on to this service, then the provider's rate limit.
+    middleware: provider-api
 
 # The JVM takes 60 % of the limit for its heap (see the Dockerfile); the rest is metaspace and threads.
 resources:

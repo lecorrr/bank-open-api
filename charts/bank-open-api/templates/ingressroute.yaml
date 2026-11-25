@@ -1,0 +1,28 @@
+{{- if .Values.route.enabled }}
+{{- $apiHost := (urlParse (required "apiUrl is required" .Values.apiUrl)).hostname }}
+# Providers reach the API only on its own host, over mutual TLS: Traefik's TLS options for that host require a
+# client certificate from the bank's CA in the handshake. The middleware passes the certificate on in a header and
+# applies the provider's rate limit. The bank's pages are not served here: their routes on the Gateway take the
+# default TLS options, and Traefik answers a request for them on this host with 421 Misdirected Request.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "bank-open-api.name" . }}-api
+  labels:
+    {{- include "bank-open-api.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - {{ .Values.route.api.entryPoint }}
+  routes:
+    - kind: Rule
+      match: Host(`{{ $apiHost }}`) && (PathPrefix(`/v2/`) || Path(`/.well-known/oauth-protected-resource`))
+      middlewares:
+        - name: {{ .Values.route.api.middleware }}
+      services:
+        - name: {{ include "bank-open-api.name" . }}
+          port: {{ .Values.service.port }}
+  tls:
+    secretName: {{ .Values.route.api.tlsSecret }}
+    options:
+      name: {{ .Values.route.api.tlsOptions }}
+{{- end }}

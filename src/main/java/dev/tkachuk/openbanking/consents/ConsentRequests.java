@@ -6,6 +6,7 @@ import dev.tkachuk.openbanking.api.model.AccountAccessConsent;
 import dev.tkachuk.openbanking.api.model.AccountAccessRights;
 import dev.tkachuk.openbanking.api.model.AccountReference;
 import dev.tkachuk.openbanking.api.model.ConsentTypeCode;
+import dev.tkachuk.openbanking.common.TppRedirectUris;
 import dev.tkachuk.openbanking.common.error.ApiException;
 import dev.tkachuk.openbanking.common.error.ErrorCode;
 import java.net.URI;
@@ -17,8 +18,6 @@ import org.jspecify.annotations.Nullable;
 
 /** Turns the contract's consent request into a NewConsent, refusing what this bank does not offer. */
 final class ConsentRequests {
-
-    private static final int MAX_REDIRECT_URI_LENGTH = 2048;
 
     private ConsentRequests() {
     }
@@ -38,7 +37,7 @@ final class ConsentRequests {
         for (int i = 0; i < payments.size(); i++) {
             accounts.add(account(payments.get(i), "access.payments[" + i + "]"));
         }
-        checkRedirectUri(tppRedirectUri);
+        TppRedirectUris.check(tppRedirectUri);
         return new NewConsent(accounts, body.getRecurringIndicator(), body.getValidTo(), body.getFrequencyPerDay(),
                 tppRedirectUri);
     }
@@ -59,21 +58,6 @@ final class ConsentRequests {
                     field + ".rights asks for a right this bank does not offer; offered: accountDetails, balances")));
         }
         return new NewConsent.RequestedAccount(reference.getIban(), reference.getCurrency(), rights);
-    }
-
-    // The customer is sent back here after approving, so it must be a complete web address the bank can store.
-    private static void checkRedirectUri(@Nullable URI uri) {
-        if (uri == null) {
-            return;
-        }
-        // The bank sends the customer's browser there after the decision, so only over TLS, as FAPI 2.0 asks.
-        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
-            throw new ApiException(ErrorCode.FORMAT_ERROR, "TPP-Redirect-URI must be an absolute https URI");
-        }
-        if (uri.toString().length() > MAX_REDIRECT_URI_LENGTH) {
-            throw new ApiException(ErrorCode.FORMAT_ERROR,
-                    "TPP-Redirect-URI must be at most " + MAX_REDIRECT_URI_LENGTH + " characters");
-        }
     }
 
     private static boolean isSet(@Nullable List<?> list) {

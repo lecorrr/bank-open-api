@@ -106,13 +106,37 @@
           }
         }
       ]
+    },
+    {
+      "name": "payments",
+      "description": "Payment initiation: payments the customer approves at the bank",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Start payments you approve at the bank"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience bank-open-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "bank-open-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "clientPolicies": {
     "policies": [
       {
         "name": "fapi-2-for-providers",
-        "description": "Providers, the clients with the scope accounts, follow the FAPI 2.0 Security Profile",
+        "description": "Providers, the clients with scope accounts or payments, follow the FAPI 2.0 Security Profile",
         "enabled": true,
         "conditions": [
           {
@@ -120,7 +144,8 @@
             "configuration": {
               "type": "Default",
               "scopes": [
-                "accounts"
+                "accounts",
+                "payments"
               ]
             }
           }
@@ -148,7 +173,8 @@
       "fullScopeAllowed": false,
       "defaultClientScopes": [
         "basic",
-        "accounts"
+        "accounts",
+        "payments"
       ],
       "optionalClientScopes": [],
       "attributes": {
@@ -162,7 +188,7 @@
     {
       "clientId": "bank-approval",
       "name": "Bank approval pages",
-      "description": "bank-open-api's pages where customers approve and withdraw consents",
+      "description": "bank-open-api's pages where customers decide on consents and payments",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,

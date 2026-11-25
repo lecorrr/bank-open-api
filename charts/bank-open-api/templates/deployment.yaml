@@ -41,6 +41,8 @@ spec:
               value: {{ .Values.providerTokens.jwkSetUri | quote }}
             - name: PUBLIC_URL
               value: {{ .Values.publicUrl | quote }}
+            - name: API_URL
+              value: {{ .Values.apiUrl | quote }}
             - name: CUSTOMER_SIGN_IN_TOKEN_URI
               value: {{ .Values.customerSignIn.tokenUri | quote }}
             - name: CUSTOMER_SIGN_IN_CLIENT_SECRET

@@ -2,6 +2,7 @@ package dev.tkachuk.openbanking.bankcore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.headerDoesNotExist;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
@@ -14,16 +15,20 @@ import dev.tkachuk.openbanking.common.web.RequestIdFilter;
 import java.math.BigDecimal;
 import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.MDC;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
+import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.test.web.client.ResponseCreator;
 import org.springframework.web.client.RestClient;
 
 class BankCoreClientTest {
@@ -35,6 +40,16 @@ class BankCoreClientTest {
              "createdAt": "2026-11-20T08:00:00Z"}
             """.formatted(IBAN);
     private static final String REQUEST_ID = "99391c7e-ad88-49ec-a2ad-99ddcb1f7721";
+    private static final String TRANSFERS_URL = "http://bank-core.test:8080/api/v1/transfers";
+    private static final UUID TRANSFER_ID = UUID.fromString("8d2f4b6a-0c1e-4f3a-9b5d-7e9f1a3c5b70");
+    private static final String PAYMENT_ID = "5b7e2c9a-1d4f-4a6b-8c3e-9f0a1b2c3d4e";
+    private static final TransferOrder ORDER = new TransferOrder(IBAN, "UA573999990000000000000000002",
+            "Olena Kovalenko", new BigDecimal("150.50"), "UAH", "Rent for November");
+    private static final String TRANSFER_JSON = """
+            {"id": "%s", "fromIban": "%s", "fromName": null, "toIban": "UA573999990000000000000000002",
+             "toName": "Olena Kovalenko", "amount": 150.50, "currency": "UAH", "description": "Rent for November",
+             "status": "%s", "createdAt": "2026-11-25T10:00:00Z"}
+            """;
 
     // The server binds to the builder before the client builds its RestClient from it.
     private final RestClient.Builder builder = RestClient.builder();
@@ -114,5 +129,105 @@ class BankCoreClientTest {
         assertThatThrownBy(() -> client.findAccount(IBAN))
                 .isInstanceOf(BankCoreUnavailableException.class)
                 .hasMessage("bank-core could not be reached (ResourceAccessException)");
+    }
+
+    @Test
+    void shouldMakeTransferUnderThePaymentsKey() {
+        bankCore.expect(requestTo(TRANSFERS_URL)).andExpect(method(HttpMethod.POST))
+                .andExpect(header("Idempotency-Key", PAYMENT_ID))
+                .andExpect(content().json("""
+                        {"fromIban": "%s", "toIban": "UA573999990000000000000000002", "toName": "Olena Kovalenko",
+                         "amount": 150.50, "currency": "UAH", "description": "Rent for November"}
+                        """.formatted(IBAN), JsonCompareMode.STRICT))
+                .andRespond(withStatus(HttpStatus.CREATED).contentType(MediaType.APPLICATION_JSON)
+                        .body(TRANSFER_JSON.formatted(TRANSFER_ID, IBAN, "COMPLETED")));
+
+        assertThat(client.transfer(ORDER, PAYMENT_ID))
+                .isEqualTo(new BankCoreTransfer(TRANSFER_ID, BankCoreTransfer.Status.COMPLETED));
+        bankCore.verify();
+    }
+
+    // A repeat under the same key gets the transfer made the first time, as it is now.
+    @Test
+    void shouldReturnTransferMadeEarlierUnderTheSameKey() {
+        bankCore.expect(requestTo(TRANSFERS_URL)).andRespond(
+                withSuccess(TRANSFER_JSON.formatted(TRANSFER_ID, IBAN, "PENDING"), MediaType.APPLICATION_JSON)
+                        .header("Idempotent-Replayed", "true"));
+
+        assertThat(client.transfer(ORDER, PAYMENT_ID))
+                .isEqualTo(new BankCoreTransfer(TRANSFER_ID, BankCoreTransfer.Status.PENDING));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"422, INSUFFICIENT_FUNDS", "404, ACCOUNT_NOT_FOUND", "400, VALIDATION_FAILED"})
+    void shouldReportRefusalWithBankCoresCode(int status, String code) {
+        bankCore.expect(requestTo(TRANSFERS_URL)).andRespond(problem(status, code));
+
+        assertThatThrownBy(() -> client.transfer(ORDER, PAYMENT_ID))
+                .isInstanceOfSatisfying(TransferRefusedException.class, e -> assertThat(e.code()).isEqualTo(code));
+    }
+
+    @Test
+    void shouldReportConflictAsUnavailable() {
+        bankCore.expect(requestTo(TRANSFERS_URL)).andRespond(problem(409, "CONFLICT"));
+
+        assertThatThrownBy(() -> client.transfer(ORDER, PAYMENT_ID))
+                .isInstanceOf(BankCoreUnavailableException.class)
+                .hasMessage("bank-core answered 409 CONFLICT");
+    }
+
+    @Test
+    void shouldReportReusedKeyAsBug() {
+        bankCore.expect(requestTo(TRANSFERS_URL)).andRespond(problem(422, "IDEMPOTENCY_KEY_REUSED"));
+
+        assertThatThrownBy(() -> client.transfer(ORDER, PAYMENT_ID)).isInstanceOf(IllegalStateException.class);
+    }
+
+    // A proxy's error page has no code: the outcome is unknown, not refused.
+    @Test
+    void shouldReportAnswerWithoutBankCoresCodeAsUnavailable() {
+        bankCore.expect(requestTo(TRANSFERS_URL)).andRespond(withStatus(HttpStatusCode.valueOf(502))
+                .contentType(MediaType.TEXT_HTML).body("<html><body>Bad Gateway</body></html>"));
+
+        assertThatThrownBy(() -> client.transfer(ORDER, PAYMENT_ID))
+                .isInstanceOf(BankCoreUnavailableException.class)
+                .hasMessage("bank-core answered 502");
+    }
+
+    @Test
+    void shouldReportTransferToUnreachableBankCoreAsUnavailable() {
+        bankCore.expect(requestTo(TRANSFERS_URL))
+                .andRespond(withException(new SocketTimeoutException("Read timed out")));
+
+        assertThatThrownBy(() -> client.transfer(ORDER, PAYMENT_ID))
+                .isInstanceOf(BankCoreUnavailableException.class)
+                .hasMessage("bank-core could not be reached (ResourceAccessException)");
+    }
+
+    @Test
+    void shouldReadTransferById() {
+        bankCore.expect(requestTo(TRANSFERS_URL + "/" + TRANSFER_ID)).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(TRANSFER_JSON.formatted(TRANSFER_ID, IBAN, "REJECTED"),
+                        MediaType.APPLICATION_JSON));
+
+        assertThat(client.findTransfer(TRANSFER_ID))
+                .isEqualTo(new BankCoreTransfer(TRANSFER_ID, BankCoreTransfer.Status.REJECTED));
+    }
+
+    @Test
+    void shouldReportUnknownTransferAsUnavailable() {
+        bankCore.expect(requestTo(TRANSFERS_URL + "/" + TRANSFER_ID)).andRespond(problem(404, "TRANSFER_NOT_FOUND"));
+
+        assertThatThrownBy(() -> client.findTransfer(TRANSFER_ID))
+                .isInstanceOf(BankCoreUnavailableException.class)
+                .hasMessage("bank-core answered 404");
+    }
+
+    // bank-core's errors: RFC 9457 problem details with its own code.
+    private static ResponseCreator problem(int status, String code) {
+        return withStatus(HttpStatusCode.valueOf(status)).contentType(MediaType.APPLICATION_PROBLEM_JSON).body("""
+                {"type": "urn:bank-core:error:refused", "title": "Refused", "status": %d, "detail": "Refused",
+                 "code": "%s"}
+                """.formatted(status, code));
     }
 }

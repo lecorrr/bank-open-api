@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{customer/layout :: head('Payment')}"></head>
+<body>
+<main th:with="payment=${page.payment}">
+    <p class="muted" th:if="${customerName != ''}" th:text="|Signed in as ${customerName}|"></p>
+    <h1>Payment</h1>
+    <th:block th:if="${payment.awaitingDecision}" th:with="order=${payment.order}">
+        <p><strong th:text="${payment.providerId ?: 'A provider'}"></strong> asks you to make this payment:</p>
+        <table>
+            <tbody>
+            <tr><th>Amount</th><td th:text="|${order.amount} ${order.currency}|"></td></tr>
+            <tr><th>To</th><td th:text="${order.creditorName}"></td></tr>
+            <tr><th>To account</th><td th:text="${order.creditorIban}"></td></tr>
+            <tr><th>Purpose</th><td th:text="${order.remittance}"></td></tr>
+            <tr>
+                <th>From account</th>
+                <td>
+                    <span th:text="${order.debtorIban}"></span>
+                    <span class="warning" th:text="${payment.debtorAccountHeld} ? '' : 'not yours'"></span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+        <p class="warning" th:unless="${page.approvable}">
+            The payment is to be made from an account that is not yours, so you can only reject it.
+        </p>
+        <!-- Spring Security adds the CSRF token to forms made with th:action. -->
+        <form method="post" class="actions" th:action="@{/customer/payments/{id}(id=${payment.id})}">
+            <button type="submit" name="decision" value="approve" th:disabled="${!page.approvable}">Approve</button>
+            <button type="submit" name="decision" value="reject" class="secondary">Reject</button>
+        </form>
+    </th:block>
+    <p th:unless="${payment.awaitingDecision}" th:text="|This payment is ${page.outcome}.|"></p>
+</main>
+</body>
+</html>

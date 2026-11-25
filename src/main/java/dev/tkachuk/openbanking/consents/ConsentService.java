@@ -1,12 +1,12 @@
 package dev.tkachuk.openbanking.consents;
 
+import dev.tkachuk.openbanking.common.ResourceIds;
 import dev.tkachuk.openbanking.common.error.ApiException;
 import dev.tkachuk.openbanking.common.error.ErrorCode;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,8 +21,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class ConsentService {
 
     private static final Logger log = LoggerFactory.getLogger(ConsentService.class);
-    private static final Pattern UUID_TEXT =
-            Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
     private static final String ACCOUNT_LIST = "accounts";
 
     private final ConsentRepository repository;
@@ -163,10 +161,8 @@ public class ConsentService {
     }
 
     private Consent find(String consentId, ErrorCode whenUnknown) {
-        if (!UUID_TEXT.matcher(consentId).matches()) {
-            throw new ApiException(whenUnknown, whenUnknown.text());
-        }
-        return repository.findById(UUID.fromString(consentId))
+        return ResourceIds.parse(consentId)
+                .flatMap(repository::findById)
                 .orElseThrow(() -> new ApiException(whenUnknown, whenUnknown.text()));
     }
 

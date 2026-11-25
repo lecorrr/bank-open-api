@@ -11,6 +11,25 @@ spec:
     - name: {{ .Values.route.gateway }}
       sectionName: {{ .Values.route.listener }}
   rules:
+    # What only providers call: the token endpoint (introspection is under it too) and pushed authorization
+    # requests. The longer paths win over the rule below.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /realms/bank/protocol/openid-connect/token
+        - path:
+            type: PathPrefix
+            value: /realms/bank/protocol/openid-connect/ext/par/request
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: {{ .Values.route.providerMiddleware }}
+      backendRefs:
+        - name: {{ .Release.Name }}
+          port: 8080
+    # The rest of the realm, for customers' browsers and providers alike.
     - matches:
         - path:
             type: PathPrefix

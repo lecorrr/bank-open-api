@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# smoke-test.sh: signs in as the test provider "smoke-test" and takes consents through the API the way a provider
-# would, with the test customer deciding on the bank's page as a browser would. It reads Keycloak's discovery
-# document, gets a token with the client credentials grant, signing in with a JWT it signs with its key
+# smoke-test.sh: signs in as the test provider "smoke-test" and takes consents and payments through the API the way
+# a provider would, with the test customer deciding on the bank's page as a browser would. It reads Keycloak's
+# discovery document, gets a token with the client credentials grant, signing in with a JWT it signs with its key
 # (private_key_jwt, PS256), over mutual TLS with its certificate, and checks the token is bound to that
 # certificate. Then three consents: one the provider deletes before any decision; one the customer approves on the
 # bank's page (signed in at Keycloak's login form), which the provider then reads under, and which the customer
-# withdraws; one that names another customer's account, which the customer can only reject. It also checks that
-# calls without the certificate or without a token are refused, and that a decision without the page's CSRF token
-# is. Stops at the first answer that differs. Jenkins runs it after each deploy; it works the same from here.
+# withdraws; one that names another customer's account, which the customer can only reject. Then three payments:
+# one the provider cancels; one of 1.00 UAH the customer approves, which bank-core makes within the bank at once;
+# one from another customer's account, which the customer can only reject. The API has a host of its own: the
+# test checks that it takes no connection without the provider's certificate or with one the bank did not issue,
+# that the bank's address does not serve the API, not even when a call names the API's host, that a call without a
+# token is refused, and, last, that a burst of calls over the provider's rate limit gets 429 with Retry-After. It
+# also checks that a decision without the page's CSRF token is refused. Stops at the first answer that differs.
+# Jenkins runs it after each deploy; it works the same from here.
 #
 #   bash scripts/smoke-test.sh                               through Traefik on this machine
 #   bash scripts/smoke-test.sh https://k3d-bank-serverlb       from Jenkins, on k3d's Docker network
@@ -19,7 +24,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="smoke-test.sh"
-readonly PROJECT_VERSION="0.4.0"
+readonly PROJECT_VERSION="0.6.1"
 token_only=0
 if [[ "${1:-}" == "--token" ]]; then
   token_only=1
@@ -31,7 +36,8 @@ readonly BASE_URL="${1:-https://localhost:8443}"
 readonly PKI_DIR="${PKI_DIR:-${HOME}/.config/bank-open-api/pki}"
 readonly CLIENT_ID="smoke-test"
 readonly REALM_URL="${BASE_URL}/realms/bank"
-# The first of bank-core's demo accounts, the test customer's (C1001), and one of another customer (C1002).
+# The first of bank-core's demo accounts, the test customer's (C1001), and one of another customer (C1002). Each
+# run pays 1.00 UAH from the first to the second; the demo data gives the first 10 000.00.
 readonly IBAN="UA843999990000000000000000001"
 readonly OTHERS_IBAN="UA573999990000000000000000002"
 # The test customer in the realm bank; cluster-up.sh writes the password of the Secret test-customer into PKI_DIR.
@@ -40,6 +46,10 @@ readonly CUSTOMER="artem.demo"
 readonly TPP_REDIRECT="https://tpp.example/smoke-test/done"
 # The bank's public address, which the links to its pages and to Keycloak's login start with.
 readonly PUBLIC_URL="https://localhost:8443"
+# The API's own host, where Traefik requires the provider's client certificate in the TLS handshake.
+readonly API_URL="https://api.localhost:8443"
+# The bank's one payment product: credit transfers in UAH to accounts at banks in Ukraine.
+readonly PAYMENTS="/v2/payments/domestic-credit-transfers"
 
 echo "== ${SCRIPT_NAME} (bank-open-api ${PROJECT_VERSION}) against ${BASE_URL} =="
 
@@ -70,13 +80,18 @@ browser_route=()
 if [[ "${base_host}:${base_port}" != "localhost:8443" ]]; then
   browser_route=(--connect-to "localhost:8443:${base_host}:${base_port}")
 fi
+# Calls to the API keep its host as the name, for Traefik's TLS options and route and for the certificate, and
+# connect where BASE_URL points: no lookup of the name is needed, here or in Jenkins.
+api_route=(--connect-to "${API_URL#https://}:${base_host}:${base_port}")
 
 answer="$(mktemp)"
 headers="$(mktemp)"
 cookies="$(mktemp)"
 # The password goes to curl from a file, never on a command line; a line break at its end is not part of it.
 password="$(mktemp)"
-trap 'rm -f "$answer" "$headers" "$cookies" "$password"' EXIT
+# A key and certificate the bank's CA did not sign, made for this run.
+stranger="$(mktemp -d)"
+trap 'rm -f "$answer" "$headers" "$cookies" "$password"; rm -rf "$stranger"' EXIT
 tr -d '\n' < "${PKI_DIR}/test-customer.password" > "$password"
 status=""
 
@@ -87,13 +102,31 @@ call() {
   status="$(curl -sS -o "$answer" -w '%{http_code}' --cacert "$CA" -X "$method" "$@" "$url")"
 }
 
-# api METHOD PATH [curl options]: a call to the API as the provider, with its token and its certificate. Every call
-# has its own request id.
+# api METHOD PATH [curl options]: a call to the API as the provider, on the API's host, with its token and its
+# certificate. Every call has its own request id.
 api() {
   local method=$1 path=$2
   shift 2
-  call "$method" "${BASE_URL}${path}" --cert "$CERTIFICATE" --key "$KEY" \
+  call "$method" "${API_URL}${path}" "${api_route[@]}" --cert "$CERTIFICATE" --key "$KEY" \
     -H "Authorization: Bearer ${access_token}" -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)" "$@"
+}
+
+# no_connection WHAT [curl options]: a call to the API's host that Traefik must end in the TLS handshake, before
+# any HTTP: no status, and curl stopped in TLS (35) or on the connection Traefik closed after its alert (52, 55, 56),
+# not before it reached Traefik (6, 7, 28).
+no_connection() {
+  local what=$1 code curl_exit=0 error
+  shift
+  error="$(mktemp)"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" "${api_route[@]}" "$@" \
+    "${API_URL}/v2/accounts" 2> "$error")" || curl_exit=$?
+  if [[ "$code" != "000" || ! "$curl_exit" =~ ^(35|52|55|56)$ ]]; then
+    echo "FAIL ${what}: HTTP ${code}, curl exit ${curl_exit}, expected no connection: $(head -c 300 "$error")"
+    rm -f "$error"
+    exit 1
+  fi
+  rm -f "$error"
+  echo "ok   ${what}"
 }
 
 # field NAME: a top-level string field of the last answer; Keycloak and the API answer with compact JSON.
@@ -194,6 +227,26 @@ create_consent() {
   page="/customer/consents/${consent_id}"
 }
 
+# create_payment DEBTOR_IBAN CREDITOR_IBAN: a payment of 1.00 UAH, with the provider's redirect address. Sets
+# $payment_id, $payment (its path in the API) and $page, the bank's page for the customer.
+create_payment() {
+  api POST "$PAYMENTS" -H 'Content-Type: application/json' -H 'PSU-IP-Address: 192.0.2.10' \
+    -H "TPP-Redirect-URI: ${TPP_REDIRECT}" \
+    --data "{\"debtorAccount\": {\"iban\": \"$1\"}, \"instructedAmount\": {\"currency\": \"UAH\", \"amount\": \"1.00\"},
+             \"creditorAccount\": {\"iban\": \"$2\"}, \"creditor\": {\"name\": \"Olena Kovalenko\"},
+             \"remittanceInformationUnstructured\": \"Smoke test payment\"}"
+  expect "payment initiated" 201 transactionStatus RCVD
+  payment_id="$(field paymentId)"
+  local link
+  link="$(sed -n 's/.*"scaRedirect":{"href":"\([^"]*\)".*/\1/p' "$answer")"
+  if [[ "$link" != "${PUBLIC_URL}/customer/payments/${payment_id}" ]]; then
+    echo "FAIL the payment's scaRedirect link is '${link}': $(cat "$answer")"
+    exit 1
+  fi
+  payment="${PAYMENTS}/${payment_id}"
+  page="/customer/payments/${payment_id}"
+}
+
 # expect WHAT STATUS [FIELD VALUE]
 expect() {
   local what=$1 want_status=$2 name=${3:-} want=${4:-}
@@ -265,11 +318,16 @@ if ((token_only)); then
   exit 0
 fi
 
-# RFC 9728: where a provider learns which authorization server issues tokens for the API. Open to anyone.
-call GET "${BASE_URL}/.well-known/oauth-protected-resource"
-expect "the API's protected resource metadata" 200 resource "$PUBLIC_URL"
+# RFC 9728: where a provider learns which authorization server issues tokens for the API. Open to any provider, on
+# the API's host.
+call GET "${API_URL}/.well-known/oauth-protected-resource" "${api_route[@]}" --cert "$CERTIFICATE" --key "$KEY"
+expect "the API's protected resource metadata, on its own host" 200 resource "$API_URL"
 if ! grep -qF "\"authorization_servers\":[\"${issuer}\"]" "$answer"; then
   echo "FAIL the metadata names another authorization server than ${issuer}: $(cat "$answer")"
+  exit 1
+fi
+if ! grep -q '"scopes_supported":\[[^]]*"payments"' "$answer"; then
+  echo "FAIL the metadata lists no scope payments: $(cat "$answer")"
   exit 1
 fi
 
@@ -283,14 +341,32 @@ expect "consent ${consent_id} is received" 200 consentStatus received
 api GET /v2/accounts -H "Consent-ID: ${consent_id}"
 expect "account reads refused before the customer approves" 401 code CONSENT_INVALID
 
-# The token alone is not enough: without the certificate it is bound to, the API refuses it.
-call GET "${BASE_URL}/v2/consents/account-access/${consent_id}/status" -H "Authorization: Bearer ${access_token}" \
-  -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)"
-expect "token without its certificate refused" 401 code CERTIFICATE_MISSING
+# The token alone is not enough: the API's host takes no connection without a certificate from the bank's CA.
+no_connection "the API's host refuses a connection without a client certificate" \
+  -H "Authorization: Bearer ${access_token}"
+openssl req -x509 -newkey rsa:2048 -noenc -days 1 -subj "/CN=not a provider of the bank" \
+  -keyout "${stranger}/key.pem" -out "${stranger}/certificate.pem" 2> /dev/null
+no_connection "the API's host refuses a certificate the bank did not issue" \
+  --cert "${stranger}/certificate.pem" --key "${stranger}/key.pem" -H "Authorization: Bearer ${access_token}"
 
+# The API is on its own host only; the bank's address has no route for it.
 call GET "${BASE_URL}/v2/consents/account-access/${consent_id}/status" --cert "$CERTIFICATE" --key "$KEY" \
-  -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)"
+  -H "Authorization: Bearer ${access_token}"
+expect "the bank's address does not serve the API" 404
+# Nor does a connection made to the bank's address, where no certificate is required, reach the API by naming its
+# host: Traefik sees the handshake had other TLS options than the API's route and answers 421.
+call GET "${BASE_URL}/v2/consents/account-access/${consent_id}/status" -H "Host: ${API_URL#https://}" \
+  -H "Authorization: Bearer ${access_token}"
+expect "the API's host named on a connection to the bank's address" 421
+
+call GET "${API_URL}/v2/consents/account-access/${consent_id}/status" "${api_route[@]}" -D "$headers" \
+  --cert "$CERTIFICATE" --key "$KEY" -H "X-Request-ID: $(cat /proc/sys/kernel/random/uuid)"
 expect "certificate without a token refused" 401 code TOKEN_UNKNOWN
+if ! grep -qiF "www-authenticate: Bearer resource_metadata=\"${API_URL}/.well-known/oauth-protected-resource\"" \
+  "$headers"; then
+  echo "FAIL the challenge does not point to the metadata on the API's host: $(grep -i '^www-authenticate' "$headers")"
+  exit 1
+fi
 
 api DELETE "/v2/consents/account-access/${consent_id}"
 expect "consent deleted" 204
@@ -341,5 +417,55 @@ browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=reject --data-urle
 expect_redirect "rejected, and the browser goes back to the provider" "$TPP_REDIRECT"
 api GET "/v2/consents/account-access/${consent_id}/status"
 expect "consent ${consent_id} is rejected" 200 consentStatus rejected
+
+# --- a payment the provider cancels before the customer decides ------------------------------------------------
+
+create_payment "$IBAN" "$OTHERS_IBAN"
+api GET "${payment}/status"
+expect "payment ${payment_id} is RCVD" 200 transactionStatus RCVD
+api DELETE "$payment"
+expect "payment cancelled" 204
+api GET "${payment}/status"
+expect "payment ${payment_id} is CANC" 200 transactionStatus CANC
+
+# --- a payment the customer approves: bank-core makes it within the bank at once -------------------------------
+
+create_payment "$IBAN" "$OTHERS_IBAN"
+sign_in "$page"
+page_has "the page shows the amount" "1.00 UAH"
+page_has "the page shows the payee's account" "$OTHERS_IBAN"
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=approve --data-urlencode "_csrf=${csrf}"
+expect_redirect "payment approved, and the browser goes back to the provider" "$TPP_REDIRECT"
+api GET "${payment}/status"
+expect "payment ${payment_id} is ACCC: paid within the bank" 200 transactionStatus ACCC
+
+# --- a payment from another customer's account: the customer can only reject it -------------------------------
+
+create_payment "$OTHERS_IBAN" "$IBAN"
+sign_in "$page"
+page_has "the page says the payment's account is not the customer's" "not yours"
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=approve --data-urlencode "_csrf=${csrf}"
+expect "approval refused: the payment's account is not the customer's" 403
+browser POST "${PUBLIC_URL}${page}" --data-urlencode decision=reject --data-urlencode "_csrf=${csrf}"
+expect_redirect "payment rejected, and the browser goes back to the provider" "$TPP_REDIRECT"
+api GET "${payment}/status"
+expect "payment ${payment_id} is RJCT" 200 transactionStatus RJCT
+
+# --- the provider's rate limit at the edge: last, so its throttling slows nothing above ------------------------
+
+# 60 calls at once, more than the burst of 20 Traefik allows one provider: the rest come back 429 with
+# Retry-After. The metadata is the cheapest answer on the API's host.
+burst=()
+for _ in $(seq 60); do burst+=(-o /dev/null "${API_URL}/.well-known/oauth-protected-resource"); done
+curl -sS --parallel --parallel-max 60 --cacert "$CA" "${api_route[@]}" --cert "$CERTIFICATE" --key "$KEY" \
+  -w '%{http_code} %header{retry-after}\n' "${burst[@]}" > "$answer" 2>&1 || true
+limited="$(grep -c '^429 [0-9][0-9]*$' "$answer" || true)"
+passed="$(grep -c '^200 $' "$answer" || true)"
+if ((limited == 0 || passed == 0 || limited + passed != 60)); then
+  echo "FAIL a burst of 60 calls: ${passed} passed and ${limited} got 429 with Retry-After, expected some of each:"
+  sort "$answer" | uniq -c | head -5
+  exit 1
+fi
+echo "ok   a burst of 60 calls: ${passed} passed, ${limited} got 429 with Retry-After"
 
 echo "== smoke test passed =="

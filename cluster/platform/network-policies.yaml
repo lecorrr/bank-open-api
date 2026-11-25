@@ -1,0 +1,110 @@
+# Who may connect to the bank's pods. Nothing comes in unless a policy below lets it: Traefik reaches the services
+# the outside world uses, bank-open-api reaches what it calls, and PostgreSQL takes its three clients. So only
+# Traefik can hand bank-open-api a provider's certificate header. k3s enforces these with kube-router's network
+# policy controller, which rejects the rest. The kubelet's probes come from the node itself, which kube-router lets
+# through. Traffic out of the pods is not limited. scripts/cluster-up.sh applies this file and checks it is enforced.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress
+  namespace: bank
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# The API and the customer pages: from Traefik only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bank-open-api-ingress
+  namespace: bank
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bank-open-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: http
+---
+# Keycloak: from Traefik (providers and customers' browsers), and from bank-open-api, which reads its keys and
+# redeems the customer's sign-in inside the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-ingress
+  namespace: bank
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bank-open-api
+      ports:
+        - port: http
+---
+# bank-core has no route from outside: only bank-open-api calls it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bank-core-ingress
+  namespace: bank
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: bank-core
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bank-open-api
+      ports:
+        - port: http
+---
+# PostgreSQL: the three services that keep their data in it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: bank
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bank-open-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: keycloak
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bank-core
+      ports:
+        - port: postgres

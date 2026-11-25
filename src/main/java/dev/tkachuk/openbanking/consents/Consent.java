@@ -1,5 +1,6 @@
 package dev.tkachuk.openbanking.consents;
 
+import dev.tkachuk.openbanking.common.Iban;
 import dev.tkachuk.openbanking.common.error.ApiException;
 import dev.tkachuk.openbanking.common.error.ErrorCode;
 import java.net.URI;

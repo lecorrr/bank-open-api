@@ -1,6 +1,6 @@
 {{- if .Values.route.enabled }}
-# Providers reach the API only through the bank's Gateway, over mutual TLS; Traefik routes /v2 here with the
-# provider's client certificate in a header. Customers' browsers reach the bank's pages through the same Gateway.
+# Customers' browsers reach the bank's pages and the sign-in through the bank's Gateway, on the bank's address.
+# The API is not here: it has a host of its own (ingressroute.yaml).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -12,19 +12,6 @@ spec:
     - name: {{ .Values.route.gateway }}
       sectionName: {{ .Values.route.listener }}
   rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: {{ .Values.route.apiPathPrefix }}
-      filters:
-        - type: ExtensionRef
-          extensionRef:
-            group: traefik.io
-            kind: Middleware
-            name: {{ .Values.route.clientCertificateMiddleware }}
-      backendRefs:
-        - name: {{ include "bank-open-api.name" . }}
-          port: {{ .Values.service.port }}
     - matches:
         {{- range .Values.route.pagePathPrefixes }}
         - path:

@@ -89,7 +89,7 @@ public class CustomerSignInConfig {
                 .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
                 .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
                 // Fixed rather than taken from the request, and registered in Keycloak exactly so.
-                .redirectUri(publicUrl.of("/login/oauth2/code/" + REGISTRATION_ID))
+                .redirectUri(publicUrl.page("/login/oauth2/code/" + REGISTRATION_ID))
                 .scope("openid", "profile")
                 .issuerUri(signIn.issuer().toString())
                 .authorizationUri(signIn.authorizationUri().toString())

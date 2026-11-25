@@ -70,7 +70,7 @@ class AccountsControllerTest {
     private static final BankCoreAccount BANK_CORE_B =
             new BankCoreAccount(IBAN_B, "USD", new BigDecimal("10.00"), CUSTOMER);
     private static final String RESOURCE_METADATA =
-            "resource_metadata=\"https://localhost:8443/.well-known/oauth-protected-resource\"";
+            "resource_metadata=\"https://api.localhost:8443/.well-known/oauth-protected-resource\"";
 
     @Autowired
     private MockMvc mockMvc;

@@ -35,6 +35,8 @@ import org.springframework.web.client.RestClient;
 class ProviderSecurityIT {
 
     private static final String REQUEST_ID = "5b0c3d2e-7f41-4a9b-8c6d-2e1f0a9b8c7d";
+    // application.yml's default for bank-open-api.api-url: the API's own host.
+    private static final String API_URL = "https://api.localhost:8443";
     private static final String CONSENT_BODY = """
             {"access": {"payments": [{"account": {"iban": "UA843999990000000000000000001"},
                                       "rights": ["balances"]}]},
@@ -76,7 +78,7 @@ class ProviderSecurityIT {
 
         assertRefused(answer, 401, "TOKEN_UNKNOWN");
         assertThat(answer.getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE))
-                .isEqualTo("Bearer resource_metadata=\"https://localhost:8443/.well-known/oauth-protected-resource\"");
+                .isEqualTo("Bearer resource_metadata=\"" + API_URL + "/.well-known/oauth-protected-resource\"");
         assertThat(answer.getHeaders().getFirst("X-Request-ID")).isEqualTo(REQUEST_ID);
     }
 
@@ -125,7 +127,8 @@ class ProviderSecurityIT {
         assertThat(statusAs(PROVIDER_A, consentId).getStatusCode().value()).isEqualTo(200);
     }
 
-    // RFC 9728: what a provider needs to know to get a token for this API, open to anyone.
+    // RFC 9728: what a provider needs to know to get a token for this API, open to anyone. The resource is the
+    // API's own host, not the bank's.
     @Test
     void shouldDescribeTheApiAsProtectedResource() {
         String metadata = api.get().uri("/.well-known/oauth-protected-resource").retrieve().body(String.class);
@@ -135,9 +138,9 @@ class ProviderSecurityIT {
         List<String> scopes = JsonPath.read(metadata, "$.scopes_supported");
         List<String> bearerMethods = JsonPath.read(metadata, "$.bearer_methods_supported");
         Boolean boundTokens = JsonPath.read(metadata, "$.tls_client_certificate_bound_access_tokens");
-        assertThat(resource).isEqualTo("https://localhost:8443");
+        assertThat(resource).isEqualTo(API_URL);
         assertThat(authorizationServers).containsExactly(TestTokens.ISSUER);
-        assertThat(scopes).containsExactly("accounts");
+        assertThat(scopes).containsExactly("accounts", "payments");
         assertThat(bearerMethods).containsExactly("header");
         assertThat(boundTokens).isTrue();
     }

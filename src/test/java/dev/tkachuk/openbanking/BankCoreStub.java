@@ -22,4 +22,10 @@ public class BankCoreStub {
     DynamicPropertyRegistrar bankCoreUrl(@Qualifier("bankCore") WireMockServer bankCore) {
         return registry -> registry.add("bank-open-api.bank-core.url", bankCore::baseUrl);
     }
+
+    // The retry job would call this stub by itself in the middle of a test; a test that needs it runs it.
+    @Bean
+    DynamicPropertyRegistrar paymentRetryDelay() {
+        return registry -> registry.add("bank-open-api.payments.retry-delay", () -> "1h");
+    }
 }

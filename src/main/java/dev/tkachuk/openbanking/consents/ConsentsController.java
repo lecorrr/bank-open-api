@@ -57,7 +57,7 @@ class ConsentsController implements ConsentsApi {
         // The customer approves the consent on the bank's own page, which the provider sends them to: the Berlin
         // Group's redirect approach. The link is absolute, since the customer's browser opens it.
         LinksConsents links = new LinksConsents()
-                .scaRedirect(new HrefType(publicUrl.of(CUSTOMER_CONSENTS + consent.id())))
+                .scaRedirect(new HrefType(publicUrl.page(CUSTOMER_CONSENTS + consent.id())))
                 .self(new HrefType(self))
                 .status(new HrefType(self + "/status"));
         AccountAccessConsentResponse201 response =

@@ -1,33 +1,48 @@
 # Architecture
 
-Version 0.4.0, step 4 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
-bank-core. A provider reads account data only as itself (an access token from the bank's Keycloak, over mutual TLS
-with the client certificate the token is bound to), only under its own consents, and from this version only under a
-consent the customer approved on the bank's page, for accounts that customer holds.
+Version 0.6.1, step 6 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
+API's own host with the client certificate the token is bound to. It reads account data only under its own
+consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
+payments, which the customer approves on the same pages and the bank then makes as bank-core transfers. From this
+version the edge does more of the guarding: Traefik takes no connection to the API's host without a certificate
+from the bank's CA and holds each provider to a rate limit, and network policies leave Traefik the only way in.
 
 ## Packages
 
 | Package | Holds | May use |
 |---|---|---|
-| `api` | `ConsentsApi`, `AccountsApi` and the models, generated at build time from the contract | - |
+| `api` | `ConsentsApi`, `AccountsApi`, `PaymentsApi` and the models, generated at build time from the contract | - |
 | `security` | `SecurityConfig`, `ProviderTokenValidator`, `CertificateBindingFilter`, `ClientCertificates`, `SecurityRefusals`, `AuthenticatedProvider`; for customers `CustomerSignInConfig`, `IdTokenDecoders`, `SignedInCustomer` | `common` |
 | `consents` | `Consent` and its rules, `ConsentService`, `ConsentRepository`, `ConsentRequests`, `ConsentsController` | `api`, `common`, `security` |
-| `approval` | `CustomerConsentsController` and its pages, `ApprovalService`: the customer approves, rejects, withdraws | `bankcore`, `consents`, `common`, `security` |
+| `payments` | `Payment` and its rules, `PaymentService`, `PaymentRepository`, `PaymentRequests`, `PaymentsController`, `PaymentRetryJob` | `api`, `bankcore`, `common`, `security` |
+| `approval` | `CustomerConsentsController`, `CustomerPaymentsController` and their pages, `CustomerPageErrors`, `ApprovalService`: the customer decides on consents and payments, withdraws consents | `bankcore`, `consents`, `payments`, `common`, `security` |
 | `accounts` | `AccountsController`: the account endpoints | `api`, `bankcore`, `consents`, `common`, `security` |
-| `bankcore` | `BankCoreClient`, its properties and errors: everything that knows bank-core's API | `common` |
-| `common` | `RequestIdFilter`, `ApiExceptionHandler`, `ErrorCode`, `ApiException`, `PublicUrlProperties`, `TimeConfig`, `StartupLogger` | nothing of ours |
+| `bankcore` | `BankCoreClient`, its properties, the transfer's body and answer, `TransferFailures`: everything that knows bank-core's API | `common` |
+| `common` | `RequestIdFilter`, `ApiExceptionHandler`, `ErrorCode`, `ApiException`, `Iban`, `ResourceIds`, `TppRedirectUris`, `PublicUrlProperties`, `TimeConfig`, `StartupLogger` | nothing of ours |
 
 The contract's types stay in `api` and the controllers; bank-core's JSON stays in `bankcore`; SQL stays in
-`ConsentRepository`; Spring Security stays in `security`, and the controllers learn the provider from
-`AuthenticatedProvider` and the customer from `SignedInCustomer`. `LayeringTest` fails the build when an import goes
-against the table, when a package has no line in it, when an HTTP client appears outside `bankcore` (bank-core) and
-`security` (Keycloak), SQL outside `consents` or Spring Security outside `security`.
+`ConsentRepository` and `PaymentRepository`; Spring Security stays in `security`, and the controllers learn the
+provider from `AuthenticatedProvider` and the customer from `SignedInCustomer`. `LayeringTest` fails the build when
+an import goes against the table, when a package has no line in it, when an HTTP client appears outside `bankcore`
+(bank-core) and `security` (Keycloak), SQL outside `consents` and `payments` or Spring Security outside
+`security`.
 
 ## The contract
 
 `src/main/resources/static/openapi/bank-open-api.yaml` is GD Next's Open Banking Ukraine 2.0 YAML (Apache 2.0,
 licence next to it) cut down to what this version offers: creating, reading and deleting an account access
-consent, and the account list, details and balances. The service serves it at `/openapi/bank-open-api.yaml`.
+consent, the account list, details and balances, and initiating, reading, following and cancelling a payment. The
+service serves it at `/openapi/bank-open-api.yaml`, and its header lists what the bank changed. For payments:
+
+- the payment service is fixed to `payments` in the path (`/v2/payments/{payment-product}`): single payments only;
+- the products are the bank's own list, as the specification leaves them to each bank: one,
+  `domestic-credit-transfers`, in place of the SEPA defaults;
+- the body is the single payment's JSON form only, the information answer the single payment's only, and a
+  cancellation answers 204 only (no cancellation the customer authorises);
+- `ultimateCreditor` is a plain object: the specification's three forms without a discriminator give a generated
+  interface no JSON reader can build, so a request naming one would end in a 500. The bank refuses it anyway;
+- each operation names the scope it needs (`accounts` or `payments`) instead of allowing calls without a token.
 
 openapi-generator 7.27.0 turns it into Spring interfaces and models at build time. The controllers implement the
 interfaces, so a path, header or field that disagrees with the contract does not compile. The interfaces carry
@@ -36,28 +51,33 @@ a controller runs, and the error names the field.
 
 ## Providers and their tokens
 
-A provider is a client of Keycloak's realm `bank` with the scope `accounts`, and has a client certificate from the
-bank's CA (a test CA here, made by `scripts/cluster-up.sh`). One key pair serves both: the certificate for mutual
-TLS, its key for signing in.
+A provider is a client of Keycloak's realm `bank` with the scope `accounts`, `payments` or both (an account
+information or payment initiation service, in PSD2's words), and has a client certificate from the bank's CA (a
+test CA here, made by `scripts/cluster-up.sh`). One key pair serves both: the certificate for mutual TLS, its key
+for signing in.
 
 ```
 provider                       Traefik (:8443)                     Keycloak, realm bank            bank-open-api
-   │ TLS with client certificate ──► checks it against the CA, puts it into
-   │                                 X-Forwarded-Tls-Client-Cert
+   │ https://localhost:8443, TLS with client certificate
+   │ ─────────────────────────────► checks it against the CA, puts it into
+   │                                X-Forwarded-Tls-Client-Cert, the provider's rate limit
    │ POST /realms/bank/.../token: client credentials, client_assertion = JWT (PS256)
    │ ───────────────────────────────────────────────────────────────► checks the JWT with the
    │                                                                  provider's certificate; FAPI 2.0
-   │ ◄─────────────────────── access token: typ at+jwt, aud bank-open-api, scope accounts, azp,
+   │ ◄─────────────────────── access token: typ at+jwt, aud bank-open-api, scope accounts payments, azp,
    │                           cnf.x5t#S256 = SHA-256 of the client certificate
-   │ GET /v2/... with the token, over TLS with the same certificate
+   │ https://api.localhost:8443, TLS with the same certificate
+   │ ─────────────────────────────► no certificate from the CA: no connection;
+   │                                the header, the provider's rate limit
+   │ GET /v2/... with the token
    │ ─────────────────────────────────────────────────────────────────────────────────────────────► security chain
 ```
 
-Keycloak's client policy `fapi-2-for-providers` puts every client with the default scope `accounts` under the
-built-in profile `fapi-2-security-profile`: confidential clients, `private_key_jwt` or mutual TLS sign-in, PS256 or
-ES256 signatures, tokens bound to the client certificate, PKCE for the authorization code flow of step 4. The realm
-signs with a PS256 key only. The client scope `accounts` adds the audience `bank-open-api`, and the clients use
-the RFC 9068 token type `at+jwt`.
+Keycloak's client policy `fapi-2-for-providers` puts every client with the default scope `accounts` or
+`payments` under the built-in profile `fapi-2-security-profile`: confidential clients, `private_key_jwt` or mutual
+TLS sign-in, PS256 or ES256 signatures, tokens bound to the client certificate, PKCE for the authorization code
+flow of step 4. The realm signs with a PS256 key only. The client scopes `accounts` and `payments` add the
+audience `bank-open-api`, and the clients use the RFC 9068 token type `at+jwt`.
 
 In bank-open-api, `SecurityConfig` builds the chain each request to `/v2` passes:
 
@@ -68,20 +88,22 @@ In bank-open-api, `SecurityConfig` builds the chain each request to `/v2` passes
    in `azp`, and a `cnf.x5t#S256`.
 3. `CertificateBindingFilter`: the certificate in Traefik's header must be readable, valid today, and the one whose
    thumbprint the token carries (RFC 8705). A stolen token is of no use without the provider's key.
-4. The scope: `/v2/**` needs `accounts`. Health, info and the contract are open; everything else is refused.
+4. The scope: `/v2/payments/**` needs `payments`, the rest of `/v2/**` needs `accounts`. Health, info and the
+   contract are open; everything else is refused.
 
-Controllers then ask `AuthenticatedProvider` for the provider (the token's `azp`), and `ConsentService` treats
-another provider's consent exactly as one that does not exist.
+Controllers then ask `AuthenticatedProvider` for the provider (the token's `azp`), and `ConsentService` and
+`PaymentService` treat another provider's consent or payment exactly as one that does not exist.
 
-The API also describes itself as RFC 9728 asks: `GET /.well-known/oauth-protected-resource` answers, to anyone,
-with the resource (`https://localhost:8443`), the authorization server (the realm's issuer), the scope `accounts`,
-the bearer header and certificate-bound tokens, and every `WWW-Authenticate` challenge links there with
-`resource_metadata`. Spring Security serves the document; `SecurityConfig` fills it in.
+The API also describes itself as RFC 9728 asks: `GET /.well-known/oauth-protected-resource` on the API's host
+answers, to any provider, with the resource (`https://api.localhost:8443`, the address the API is called at), the
+authorization server (the realm's issuer), the scopes `accounts` and `payments`, the bearer header and
+certificate-bound tokens, and every `WWW-Authenticate` challenge links there with `resource_metadata`. Spring
+Security serves the document; `SecurityConfig` fills it in from `bank-open-api.api-url`.
 
 ## Customers and their approval
 
 The Berlin Group's redirect approach: the provider sends the customer's browser to the bank, which signs the
-customer in, shows the consent and sends the browser back.
+customer in, shows the consent (or the payment, below) and sends the browser back.
 
 ```
 provider             customer's browser                      bank-open-api                     Keycloak, realm bank
@@ -120,7 +142,8 @@ provider             customer's browser                      bank-open-api      
   Content-Security-Policy allows the stylesheet and nothing else, and no other site may frame the pages; the
   session cookie is `Secure`, `HttpOnly` and `SameSite=Lax`, and the session lasts ten minutes idle and ends once
   the customer decides. Refusals and failures are pages too (`No such consent`, `Not your accounts`, `Already
-  decided`), and a sign-in that fails (an old link, the back button at Keycloak) ends on the bank's page, not on
+  decided` and the rest), written in one place for every page controller (`CustomerPageErrors`, ahead of the API's
+  handler), and a sign-in that fails (an old link, the back button at Keycloak) ends on the bank's page, not on
   Spring Security's `/login?error`, which this chain does not serve.
 - **Behind Traefik**: Tomcat takes the scheme, host and port from `X-Forwarded-*` (`server.forward-headers-strategy:
   native`), so the redirects Spring Security builds point at `https://localhost:8443`. The links the bank hands
@@ -168,6 +191,85 @@ Each account of a consent gets its own `resourceId`, a random UUID: the id in th
 Balances are `interimAvailable` with today's date: bank-core has no holds or overdrafts, so its balance is what
 the customer can spend now.
 
+## Payments
+
+One product, `domestic-credit-transfers`: a credit transfer in hryvnias from an account at this bank to an account
+at any bank in Ukraine, named by IBAN. The provider initiates it, the customer approves it on the bank's page, and
+the approval makes the transfer at bank-core at once.
+
+```
+provider             customer's browser                  bank-open-api                          bank-core
+ │ POST /v2/payments/domestic-credit-transfers, PSU-IP-Address, TPP-Redirect-URI
+ │ ◄── 201 RCVD, _links.scaRedirect = https://localhost:8443/customer/payments/{id}
+ │ opens it ─────────► sign-in at Keycloak, as for a consent (prompt=login)
+ │                     ◄── the page: amount, payee, payee's account, purpose, the account it is paid from
+ │                     ── POST approve, CSRF token ──────► GET /api/v1/accounts/{iban} ─────────► the holder
+ │                                                       the customer's? ACTC, stored
+ │                                                       POST /api/v1/transfers, Idempotency-Key = id ──► transfer
+ │ ◄── 302 TPP-Redirect-URI ◄── (session ended) ◄─────── ACCC, ACSP or RJCT, stored
+ │ GET .../{id}/status ─────────────────────────────────► ACSP: GET /api/v1/transfers/{id} ─────► PENDING,
+ │ ◄── transactionStatus, reasonCode ◄───────────────────                                         COMPLETED, REJECTED
+```
+
+### A payment's life
+
+| From | What happens | To |
+|---|---|---|
+| | `POST /v2/payments/domestic-credit-transfers` | `RCVD` |
+| `RCVD` | `DELETE /v2/payments/domestic-credit-transfers/{id}` | `CANC` (a second DELETE: 204 again) |
+| `RCVD` | the customer rejects it on the bank's page | `RJCT`, no reason code |
+| `RCVD` | the customer approves; bank-core says they hold the debtor account, in hryvnias | `ACTC` |
+| `ACTC` | bank-core completes the transfer within the bank | `ACCC` |
+| `ACTC` | bank-core sends it to another bank (`PENDING`): the money has left the account | `ACSP` |
+| `ACTC` | bank-core refuses it, nothing moved: `INSUFFICIENT_FUNDS` / anything else | `RJCT`, `AM04` / `DS04` |
+| `ACTC` | bank-core cannot be asked (a 409, a 5xx, a timeout) | stays `ACTC`; the retry job tries again |
+| `ACSP` | read by the provider: bank-core says the other bank accepted / refused it | `ACSC` / `RJCT`, `DS04` |
+
+Every payment belongs to the provider that initiated it (`provider_id`); for any other it does not exist (403
+`RESOURCE_UNKNOWN`). An approved or rejected payment names the customer who decided (`customer_id`); its page shows
+what it pays only to that customer, and anyone else learns no more than its status. Once the customer has decided
+the provider can no longer cancel it (405 `CANCELLATION_INVALID`): an approved payment may be paid already.
+
+What a provider may initiate, checked in `PaymentRequests` (what the bank offers) and `Payment` (the rules):
+
+- the debtor and the creditor account by IBAN only, both Ukrainian (`UA`, 29 characters, ISO 13616 check digits),
+  and different; no charges, agents or ultimate creditor (`PARAMETER_NOT_SUPPORTED`);
+- the amount in UAH, more than 0 and at most 1 000 000 000.00, with no more than two decimals (bank-core's limits);
+  account currencies, when named, UAH too;
+- the creditor's name and the purpose (`remittanceInformationUnstructured`), each one line of at most 140
+  characters, not blank: a Ukrainian credit transfer states both, and bank-core takes them as `toName` and
+  `description`;
+- an `endToEndId` of at most 35 characters, if any: kept and returned to the provider.
+
+Whether the debtor account exists is not checked at initiation: a provider must not learn which accounts do.
+
+### Making the transfer
+
+`PaymentService.approve` checks the holder, stores `ACTC` (from `RCVD` only, so a cancellation at the same moment
+wins or loses cleanly), then calls bank-core: `POST /api/v1/transfers` with the payment's order and the payment's
+id as the `Idempotency-Key`. The order never changes, so any repeat of the call is answered with the transfer made
+the first time (bank-core's 200 replay) instead of a second one. `TransferFailures` reads bank-core's answer:
+
+| bank-core answers | Means | The payment |
+|---|---|---|
+| 201 or 200, `COMPLETED` / `PENDING` / `REJECTED` | the transfer, made now or before | `ACCC` (`ACSC` to another bank) / `ACSP` / `RJCT` `DS04` |
+| 400, 404 or 422 with bank-core's code | refused for its content, nothing moved | `RJCT`, `AM04` for `INSUFFICIENT_FUNDS`, else `DS04` |
+| 422 `IDEMPOTENCY_KEY_REUSED` | bank-core keeps a different transfer under the key | stays `ACTC`, logged as an error for a person |
+| 409, 5xx, an answer without bank-core's code, no answer | the outcome is unknown | stays `ACTC` |
+
+`PaymentRetryJob` runs every `bank-open-api.payments.retry-delay` (30 s) on each instance. It takes up to 20
+payments still `ACTC` whose last attempt started a retry delay ago, oldest first, and makes their transfers the same
+way; it stops at the first one bank-core cannot be asked for. Each attempt first claims its payment in one
+statement (`attempted_at` moves to now, only if it is still older than the retry delay), so of two instances only
+one makes a payment's transfer at a time. The approval's own attempt counts as the first. The delay is at least
+30 s, longer than a call to bank-core may take (2 s to connect, 5 s to answer), so an attempt is over before
+another may claim the payment.
+
+A payment sent to another bank stays `ACSP` until that bank answers. bank-core learns the answer from
+bank-integration over Kafka; bank-open-api asks bank-core for the transfer (`GET /api/v1/transfers/{id}`) when the
+provider reads the payment or its status, and stores what changed. In the k3d cluster Kafka is off, so such a
+payment stays `ACSP` there; where bank-integration runs beside bank-core, it becomes `ACSC` or `RJCT`.
+
 ## Errors
 
 RFC 7807 problem details with the contract's `code`. `ErrorCode` holds each code's HTTP status and the text a
@@ -176,8 +278,8 @@ never a value the provider sent) or, for failures inside the bank, a message tha
 
 | Code | Status | When |
 |---|---|---|
-| `FORMAT_ERROR` | 400 | a header, parameter or body field breaks the contract or a consent rule |
-| `PARAMETER_NOT_SUPPORTED` | 400 | access beyond current accounts, an account not named by IBAN, rights the bank does not offer |
+| `FORMAT_ERROR` | 400 | a header, parameter or body field breaks the contract, a consent rule or a payment rule |
+| `PARAMETER_NOT_SUPPORTED` | 400 | access beyond current accounts, an account not named by IBAN, rights the bank does not offer, payment fields it does not offer (charges, agents, ultimate creditor) |
 | `CONSENT_TYPE_NOT_SUPPORTED` | 400 | a consent type other than `detailed` |
 | `CONSENT_UNKNOWN` | 400 | the `Consent-ID` header names no consent of this provider |
 | `TOKEN_UNKNOWN` | 401 | no access token, or one the bank cannot read: malformed, not signed by Keycloak's key |
@@ -186,14 +288,17 @@ never a value the provider sent) or, for failures inside the bank, a message tha
 | `CERTIFICATE_MISSING` | 401 | the request came without the provider's client certificate |
 | `CERTIFICATE_INVALID` | 401 | the certificate in Traefik's header cannot be read, or is not valid yet |
 | `CERTIFICATE_EXPIRED` | 401 | the certificate's end date has passed |
-| `ROLE_INVALID` | 401 | the token lacks the scope `accounts`: the provider has no role for account information |
+| `ROLE_INVALID` | 401 | the token lacks the scope the path needs: `accounts` for consents and accounts, `payments` for payments |
 | `CONSENT_INVALID` | 401 | the consent is not valid, or does not include this data |
 | `CONSENT_EXPIRED` | 401 | the consent's `validTo` has passed |
 | `CONSENT_UNKNOWN` | 403 | the path names no consent of this provider |
+| `RESOURCE_UNKNOWN` | 403 | the path names no payment of this provider |
 | `RESOURCE_UNKNOWN` | 404 | the account is not part of the consent, or no API path matches |
+| `PRODUCT_UNKNOWN` | 404 | a payment product other than `domestic-credit-transfers` |
 | `SERVICE_INVALID` | 405 | the method is not offered for the path |
+| `CANCELLATION_INVALID` | 405 | the customer has decided on the payment: it can no longer be cancelled |
 | `REQUESTED_FORMATS_INVALID` | 406 | `Accept` asks for something other than JSON |
-| `STATUS_INVALID` | 409 | the consent's status changed at the same moment |
+| `STATUS_INVALID` | 409 | the consent's or the payment's status changed at the same moment |
 | `FORMAT_ERROR` | 415 | the body is not JSON (Spring's status, the contract's code) |
 | `ACCESS_EXCEEDED` | 429 | today's reads without the customer are used up |
 | `INTERNAL_ERROR` | 500 | a bug; the provider quotes its `X-Request-ID` |
@@ -202,16 +307,28 @@ never a value the provider sent) or, for failures inside the bank, a message tha
 Refusals of the token and the certificate come with RFC 6750's `WWW-Authenticate` header: `Bearer` without an
 error when there is no token, `Bearer error="invalid_token"` or `error="insufficient_scope"` otherwise, each with
 RFC 9728's `resource_metadata` link. They go through Spring MVC's exception handling (`SecurityRefusals`), so
-`ApiExceptionHandler` writes every error in the same form. The customer pages answer with pages, not JSON.
+`ApiExceptionHandler` writes every error in the same form. The customer pages answer with pages, not JSON
+(`CustomerPageErrors`).
+
+Traefik answers some calls before bank-open-api sees them, in its own form rather than the contract's:
+
+| Answer | When |
+|---|---|
+| no connection (a TLS alert) | the API's host without a client certificate, or with one the bank's CA did not sign |
+| `429` with `Retry-After`, text body | the provider's rate limit is used up (10 a second, bursts of 20) |
+| `421 Misdirected Request` | a request whose route has other TLS options than the connection's handshake: the API's host named on a connection made to the bank's address, or the bank's pages on one made to the API's host |
+| `404`, text body | a path with no route, such as `/v2` on the bank's address |
 
 ## One request, end to end
 
 ```
-provider ── GET https://localhost:8443/v2/accounts, client certificate, Authorization, X-Request-ID, Consent-ID
-  └─ k3d load balancer :443 ── Traefik, entry point websecure (:8443): TLS, client certificate checked
-       └─ Gateway bank-gateway, listener websecure ── HTTPRoute bank-open-api, path /v2,
-          middleware pass-client-cert
-            └─ Service bank-open-api:8090 ── pod: RequestIdFilter ── security chain ── AccountsController
+provider ── GET https://api.localhost:8443/v2/accounts, client certificate, Authorization, X-Request-ID, Consent-ID
+  └─ k3d load balancer :443 ── Traefik, entry point websecure (:8443): TLS options providers, client certificate
+     required and checked against the bank's CA
+       └─ IngressRoute bank-open-api-api, host api.localhost, path /v2/, middleware provider-api: the certificate
+          into X-Forwarded-Tls-Client-Cert, then the provider's rate limit
+            └─ Service bank-open-api:8090 (network policy: from Traefik only) ── pod: RequestIdFilter ──
+               security chain ── AccountsController
                  ├─ (keys, cached) Service keycloak:8080 ── /realms/bank/protocol/openid-connect/certs
                  ├─ ConsentService ── Service postgres:5432, database openbanking
                  └─ BankCoreClient ── Service bank-core:8080 ── GET /api/v1/accounts/{iban}
@@ -228,24 +345,28 @@ on as `X-Request-Id`, the header bank-core logs under, and the RestClient from S
 |---|---|---|
 | `kube-system` | Traefik with the Gateway API provider, CoreDNS, local-path storage | k3s, `cluster/traefik-config.yaml` |
 | `bank` | namespace with the "restricted" Pod Security Standard | `scripts/cluster-up.sh` |
-| `bank` | Gateway `bank-gateway` (HTTPS), Traefik's TLS options, default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
+| `bank` | Gateway `bank-gateway` (HTTPS), Traefik's TLS options (`default`, and `providers` for the API's host), default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
+| `bank` | network policies: no ingress unless allowed; Traefik to bank-open-api and Keycloak, bank-open-api to bank-core, Keycloak and PostgreSQL, Keycloak and bank-core to PostgreSQL (`cluster/platform/network-policies.yaml`) | `scripts/cluster-up.sh` |
 | `bank` | PostgreSQL (`postgres`) with the databases `bank`, `openbanking` and `keycloak`, Keycloak (`keycloak`) with the realm `bank` (clients `smoke-test` and `bank-approval`, test customer `artem.demo`), their Secrets, account `jenkins-deployer` | `scripts/cluster-up.sh` |
-| `bank` | `bank-core` and `bank-open-api`: Deployment, Service, HTTPRoute | Jenkins, with Helm |
+| `bank` | `bank-core`: Deployment, Service; `bank-open-api`: Deployment, Service, HTTPRoute (pages), IngressRoute (the API's host) | Jenkins, with Helm |
 | Docker | registry `k3d-bank-registry`, on this machine `localhost:5050` | k3d |
 | this machine | the test CA's key and certificate, a copy of the smoke-test provider's and of the test customer's password, in `~/.config/bank-open-api/pki` | `scripts/cluster-up.sh` |
 
-Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS into Traefik, 5050 the registry.
-8480, Traefik's HTTP entry point, has no routes.
+Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS into Traefik (the bank's address
+`localhost` and the API's host `api.localhost`, which curl and systemd's resolver take to 127.0.0.1), 5050 the
+registry. 8480, Traefik's HTTP entry point, has no routes.
 
 ## Rules
 
 - **The contract leads**: the code is generated from it, and what the bank does not offer is refused with the
   contract's codes rather than ignored.
-- **Logs name consents, not people**: consent ids and counts, never IBANs, names or amounts.
+- **Logs name consents and payments, not people**: their ids, counts, statuses and bank-core's error codes, never
+  IBANs, names, purposes or amounts.
 - **Configuration** comes from environment variables (`BANK_CORE_URL`, `DB_URL`, `DB_USER`, `DB_PASSWORD`,
-  `PROVIDER_TOKENS_ISSUER`, `PROVIDER_TOKENS_JWK_SET_URI`, `PUBLIC_URL`, `CUSTOMER_SIGN_IN_TOKEN_URI`,
+  `PROVIDER_TOKENS_ISSUER`, `PROVIDER_TOKENS_JWK_SET_URI`, `PUBLIC_URL`, `API_URL`, `CUSTOMER_SIGN_IN_TOKEN_URI`,
   `CUSTOMER_SIGN_IN_CLIENT_SECRET`, `LOGGING_STRUCTURED_FORMAT_CONSOLE`), which the Helm chart sets; the database
-  login comes from the Secret `bank-open-api-db`, the client secret from `bank-approval-client`.
+  login comes from the Secret `bank-open-api-db`, the client secret from `bank-approval-client`. The payments'
+  retry delay (`bank-open-api.payments.retry-delay`, 30 s, at least 30 s) is a setting of `application.yml`.
 - **No token, certificate or key in a log line**: refusals log the contract's code and a detail written for the
   provider; the provider id (a client id), the customer's number and consent ids are logged, nothing a token holds
   beyond that. A failed sign-in logs only its OAuth 2.0 error code.
@@ -257,9 +378,9 @@ Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS int
 - **Generated interfaces, a subset of the contract.** GD Next's YAML describes the whole Berlin Group API; the
   copy here keeps the operations this version offers, so the generated code has no endpoints that answer
   nothing. Each step adds its operations from the same source.
-- **JdbcClient and Flyway, not JPA.** Three small tables and a handful of statements, among them an upsert with a
-  condition; plain SQL shows exactly what runs. `Consent` is a plain class with its rules, and the repository maps
-  it by hand.
+- **JdbcClient and Flyway, not JPA.** Four small tables and a handful of statements, among them an upsert with a
+  condition and a claim; plain SQL shows exactly what runs. `Consent` and `Payment` are plain classes with their
+  rules, and the repositories map them by hand.
 - **A resourceId for each account of a consent, not the IBAN.** No IBAN in the paths providers call, so none in
   their access logs, and the same account under two consents has two ids, so one consent's ids say nothing about
   another's.
@@ -287,13 +408,30 @@ Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS int
   would send it.
 - **The decision ends the session.** The customer has done what they came for; the next page asks for a sign-in
   again, so a shared computer keeps nothing of it.
-- **Mutual TLS ends at Traefik, and is checked when offered.** Traefik's TLS options apply to every HTTPS router
-  alike, and step 4's approval pages are for browsers without a client certificate. So Traefik verifies a
-  certificate when one comes (`VerifyClientCertIfGiven`) and the services require it where it matters: Keycloak to
-  bind a token, bank-open-api on every call. Traefik's entry point drops `X-Forwarded-Tls-Client-Cert` (and headers
+- **Mutual TLS ends at Traefik, required on the API's host.** A TLS handshake can only ask for a certificate per
+  server name, and customers' browsers have none, so the API has a host of its own (`api.localhost`) whose TLS
+  options require one from the bank's CA (`RequireAndVerifyClientCert`). On the bank's address Traefik checks a
+  certificate when one comes (`VerifyClientCertIfGiven`): Keycloak, which binds providers' tokens to it, is there,
+  and its discovery document names that address. bank-open-api still checks the certificate on every call, for
+  anything that reaches it some other way. Traefik's entry point drops `X-Forwarded-Tls-Client-Cert` (and headers
   whose names only look like it) when a client sends it, so the header can only come from Traefik's middleware.
-  Inside the cluster any pod can still reach the services directly; step 6 adds the NetworkPolicies that leave
-  only Traefik.
+- **The API's route is a Traefik IngressRoute.** In Traefik 3.7, the version k3s 1.36 ships, every Gateway
+  listener takes the TLS options named `default`; only Traefik's own IngressRoute can name others. The pages and
+  Keycloak stay on the Gateway. The Gateway API's own client certificate validation (GEP-91, which Traefik 3.8
+  reads) is set per port, not per host, so moving the API back to the Gateway would also give it a port of its own.
+- **The rate limit is per certificate, at the edge.** The provider's certificate is the one identity Traefik knows
+  before the token is checked, and one provider's traffic must not use up another's. Traefik's token bucket (10 a
+  second, bursts of 20) also covers Keycloak's token and PAR endpoints, counted apart from the API: Traefik builds
+  a route's middleware for that route alone. The buckets live in the memory of the one Traefik pod; several pods
+  would need Traefik's Redis store to share them. Calls without a certificate share a bucket only they can empty.
+- **Traefik's refusals are not in the contract's form.** A rate-limited call gets `429` with `Retry-After` and a
+  text body; a refused handshake gets no HTTP at all. Both happen before bank-open-api could write a problem
+  document, and `Retry-After` is what a client needs to wait correctly.
+- **Network policies leave Traefik the only way in.** Without them any pod in the cluster could call bank-open-api
+  directly with a certificate header of its choosing. Every pod of the `bank` namespace refuses connections no
+  policy allows; the policies name each caller by its labels and each target by its named port. They limit what
+  comes in only: what goes out (DNS, the Kubernetes API, images) stays open. `cluster-up.sh` checks they are
+  enforced, since k3s would accept them silently with its policy controller off.
 - **The binding check is a filter of its own.** Spring Security checks the token without seeing the request;
   `CertificateBindingFilter` runs right after it with the request in hand, and its refusals have their own codes
   (`CERTIFICATE_MISSING`, `CERTIFICATE_EXPIRED`) instead of a generic invalid token.
@@ -317,21 +455,64 @@ Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS int
   change.
 - **Read counts are kept.** One row per consent, data read and day; a cleanup of old days can come when it
   matters.
+- **One payment product of the bank's own, single payments only.** GD Next's list is the SEPA products of the
+  Berlin Group's defaults and says each bank publishes its own. Hryvnia transfers within Ukraine are what
+  bank-core makes; bulk and periodic payments would need bank-core's payment files and a schedule, later.
+- **The payment service fixed in the path.** With `{payment-service}` as a variable, `/v2/{service}/{product}`
+  would overlap `/v2/consents/...` and `/v2/accounts/...` (Spring picks the more specific path, but a typo in
+  `accounts` would land in the payments controller), and the scope rule could not be a path prefix.
+- **The holder check sits next to the transfer.** For consents the reads check the holder again each time; a
+  payment moves money once, so `PaymentService.approve` asks bank-core right before making the transfer, rather
+  than leaving it to the page's code. Rejecting needs no check: it moves nothing.
+- **The payment's id is the transfer's Idempotency-Key, and its order never changes.** A timeout leaves the outcome
+  unknown; the same call again gets bank-core's answer for the first one. The amount is stored with two decimals,
+  so every attempt sends the same body, which bank-core compares before it replays.
+- **Only a refusal from bank-core rejects a payment.** 400, 404 and 422 with bank-core's code are its rules saying
+  no, before any money moved. Anything else could hide a transfer that went through, so the payment stays `ACTC`
+  and is tried again with the same key. A reused key (bank-core keeps another transfer under it) is a bug no retry
+  fixes: an error in the log, for a person.
+- **A retry job, with the payment table as its queue.** Retrying when the provider reads would leave a payment
+  unpaid if no provider reads it again. The job needs no lock across instances: each attempt claims its payment in
+  one `UPDATE` on `attempted_at`, and the result is stored only from `ACTC`. The claim matters beyond the key: bank-core
+  keeps nothing for a refused transfer, so two attempts at the same time could see a refusal and a success, and
+  the payment would say `RJCT` while the money moved.
+- **The payee's bank's answer comes when the provider asks.** Only a payment the provider follows needs it, and
+  bank-open-api has no Kafka of its own: a read asks bank-core, which knows from bank-integration.
+- **`ACCC` within the bank, `ACSC` from another bank.** ISO 20022's `ACCC` says the creditor's account is credited,
+  which bank-core knows only for its own accounts; for another bank its `COMPLETED` means that bank accepted, `ACSC`.
+- **No reason code when the customer rejects.** The contract's list (`AM04`, `DS04` and the signature codes) has none
+  for it, and the Berlin Group prefers no code to a proprietary one: `RJCT` without a reason is the customer's.
+- **Undecided payments do not expire yet.** A payment waits in `RCVD` until the customer decides or the provider
+  cancels it. Expiry after some minutes would be computed on read, as a consent's is.
+- **The customer's sign-in is not bound to the amount and the payee.** The page shows both and the approval is a
+  form of the same session, but the sign-in itself says nothing of the payment, as PSD2's dynamic linking would
+  have it. RFC 9396's `authorization_details` in the authorization request would carry them to Keycloak.
+- **`endToEndId` is kept, not passed on.** bank-core's transfer API has no field for it yet, so the payee's bank
+  does not see it; the provider gets it back with the payment.
 
 ## Extending it
 
 - **Endpoint**: its operation from GD Next's YAML into `bank-open-api.yaml`, then the generated method in a
   controller; tests with `@WebMvcTest` and, for the whole path, `BankOpenApiIT`.
 - **Consent rule**: in `Consent` (or `ConsentRequests` for what the bank offers), with a case in `ConsentTest`.
-- **Table or column**: a new Flyway migration `V4__...`; the old ones never change.
-- **Call to bank-core**: a method in `BankCoreClient` that turns every failure into `BankCoreUnavailableException`.
+- **Payment rule**: in `Payment` (or `PaymentRequests` for what the bank offers), with a case in `PaymentTest`.
+- **Payment product**: its name in the contract's `paymentProduct` list (`build-subset`'s product), a check in
+  `PaymentsController` that leads to its rules, and a `product` column once there are two.
+- **Table or column**: a new Flyway migration `V5__...`; the old ones never change.
+- **Call to bank-core**: a method in `BankCoreClient` that turns every failure into `BankCoreUnavailableException`,
+  or, where bank-core's answer can refuse, into what `TransferFailures` says it means.
 - **Error**: a value in `ErrorCode` with its status, the contract's code and its text, then a test.
-- **Provider**: a client in the realm like `smoke-test` (scope `accounts`, `client-jwt`, the PS256 and binding
-  attributes), with its certificate from the bank's CA; the client policy then applies FAPI 2.0 to it.
+- **Provider**: a client in the realm like `smoke-test` (scope `accounts`, `payments` or both, `client-jwt`, the
+  PS256 and binding attributes), with its certificate from the bank's CA; the client policy then applies FAPI 2.0
+  to it.
 - **Token rule**: a check in `ProviderTokenValidator` with its code, and a case in `ProviderTokenValidatorTest`.
-- **Customer page**: a method in `CustomerConsentsController` and a template in `templates/customer/` that takes the
-  head from `customer/layout`, forms with `th:action` (so they carry the CSRF token); tests with `oidcLogin()` in
-  `CustomerConsentsControllerTest` and, through a sign-in, in `CustomerApprovalIT`.
+- **Customer page**: a controller in `approval` (its refusals then go through `CustomerPageErrors`) and a template
+  in `templates/customer/` that takes the head from `customer/layout`, forms with `th:action` (so they carry the
+  CSRF token); tests with `oidcLogin()` in a `@WebMvcTest` like `CustomerPaymentsControllerTest` and, through a
+  sign-in, in `CustomerApprovalIT` or `PaymentApprovalIT`.
 - **Package**: a line in `MAY_DEPEND_ON` of `LayeringTest` and in the table above.
-- **Service in the cluster**: a chart like `charts/bank-open-api`, a Jenkinsfile with the same stages, and its
-  database lines in `cluster-up.sh` (`ensure_secret`, `ensure_database`).
+- **Service in the cluster**: a chart like `charts/bank-open-api`, a Jenkinsfile with the same stages, its
+  database lines in `cluster-up.sh` (`ensure_secret`, `ensure_database`), and a network policy naming who may call
+  it (and in PostgreSQL's policy, if it keeps data there).
+- **Provider-only endpoint at Keycloak**: its path in the first rule of Keycloak's route, the one with the
+  rate-limited middleware.

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # cluster-up.sh: creates the k3d cluster "bank" and its platform: the bank namespace, the bank's test certificate
-# authority with the certificates it signs, Traefik's HTTPS Gateway with mutual TLS, PostgreSQL with a database
-# for bank-core, bank-open-api and Keycloak, Keycloak with the realm "bank" (its clients and the test customer), and
-# the account Jenkins deploys with. Safe to run again: it creates or fixes only what is missing, starts the cluster
-# if it was stopped, restarts it if its node came up without DNS, and has Keycloak import the realm afresh when the
-# realm file changed. The services themselves come from Jenkins (docs/cluster.md).
+# authority with the certificates it signs, Traefik's HTTPS Gateway and its TLS (a client certificate required on
+# the API's host), PostgreSQL with a database for bank-core, bank-open-api and Keycloak, Keycloak with the realm
+# "bank" (its clients and the test customer), the namespace's network policies, and the account Jenkins deploys
+# with. Safe to run again: it creates or fixes only what is missing, starts the cluster if it was stopped, restarts
+# it if its node came up without DNS, and has Keycloak import the realm afresh when the realm file changed. The
+# services themselves come from Jenkins (docs/cluster.md).
 #
 #   bash scripts/cluster-up.sh --check   report, change nothing
 #   bash scripts/cluster-up.sh           create or fix what is missing
@@ -12,7 +13,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.4.0"
+readonly PROJECT_VERSION="0.6.1"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"
@@ -42,7 +43,7 @@ for arg in "$@"; do
   case "$arg" in
     --check) mode="check" ;;
     -h | --help)
-      sed -n '2,12p' "$0"
+      sed -n '2,13p' "$0"
       exit 0
       ;;
     *)
@@ -318,6 +319,18 @@ certificate_current() {
     && openssl x509 -in "$1" -noout -checkend $((RENEW_DAYS * 86400)) > /dev/null 2>&1
 }
 
+# names_of CERTIFICATE: the names it answers to (subjectAltName), sorted and written as in the extensions below
+# (DNS:name, IP:address); empty when it has none.
+names_of() {
+  openssl x509 -in "$1" -noout -ext subjectAltName 2> /dev/null | tail -n +2 | tr ',' '\n' \
+    | sed 's/^ *//; s/^IP Address:/IP:/' | grep . | sort | paste -sd, - || true
+}
+
+# wanted_names EXTENSIONS: the subjectAltName entries of an extension list, sorted; empty when it has none.
+wanted_names() {
+  sed -n 's/^subjectAltName=//p' <<< "$1" | tr ',' '\n' | grep . | sort | paste -sd, - || true
+}
+
 # issue_certificate NAME SUBJECT EXTENSIONS: a certificate from the test CA for the key in $work/NAME.key, made
 # first if there is none. A renewed provider certificate keeps its key, so the key Keycloak knows still fits.
 issue_certificate() {
@@ -332,17 +345,19 @@ issue_certificate() {
 }
 
 # ensure_certificate_secret NAME SUBJECT EXTENSIONS: a kubernetes.io/tls Secret with a key and a certificate from
-# the test CA, renewed when it nears its end or another CA signed it. The Secret also holds the certificate as
-# one line of base64 DER under certificate-base64, the form Keycloak's realm file takes.
+# the test CA, renewed when it nears its end, another CA signed it or it answers to other names than the extensions
+# give. The Secret also holds the certificate as one line of base64 DER under certificate-base64, the form
+# Keycloak's realm file takes.
 ensure_certificate_secret() {
   local name=$1 subject=$2 extensions=$3
   secret_file "$name" tls.crt "${work}/${name}.crt"
-  if [[ -s "${work}/${name}.crt" ]] && certificate_current "${work}/${name}.crt"; then
+  if [[ -s "${work}/${name}.crt" ]] && certificate_current "${work}/${name}.crt" \
+    && [[ "$(names_of "${work}/${name}.crt")" == "$(wanted_names "$extensions")" ]]; then
     ok "secret ${name}: certificate until $(openssl x509 -in "${work}/${name}.crt" -noout -enddate | cut -d= -f2)"
     return
   fi
   if [[ "$mode" == "check" ]]; then
-    fail "secret ${name} is missing, ends within ${RENEW_DAYS} days or is not from the test CA"
+    fail "secret ${name} is missing, ends within ${RENEW_DAYS} days, is not from the test CA or names other hosts"
     return
   fi
   secret_file "$name" tls.key "${work}/${name}.key"
@@ -368,10 +383,12 @@ if [[ -s "${PKI_DIR}/ca.crt" ]]; then
       --dry-run=client -o yaml | k apply -f - > /dev/null
     ok "secret provider-ca set to the test CA"
   fi
-  # The names Traefik's certificate answers to: this machine, and k3d's load balancer for Jenkins.
+  # The names Traefik's certificate answers to: the bank's address and the API's host on this machine, and k3d's
+  # load balancer for Jenkins. A certificate from before 0.6.0, without the API's host, is issued again.
   ensure_certificate_secret bank-gateway-tls "/O=bank-open-api test/CN=localhost" \
     "$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
-      'extendedKeyUsage=serverAuth' 'subjectAltName=DNS:localhost,DNS:k3d-bank-serverlb,IP:127.0.0.1')"
+      'extendedKeyUsage=serverAuth' \
+      'subjectAltName=DNS:localhost,DNS:api.localhost,DNS:k3d-bank-serverlb,IP:127.0.0.1')"
   # The test provider "smoke-test": Keycloak's client of that name and scripts/smoke-test.sh.
   ensure_certificate_secret smoke-test-provider "/O=bank-open-api test/CN=smoke-test" \
     "$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' \
@@ -397,8 +414,10 @@ if [[ "$mode" == "fix" ]]; then
   done
 fi
 if k -n "$NAMESPACE" get tlsoption default > /dev/null 2>&1 \
-  && k -n "$NAMESPACE" get middleware pass-client-cert > /dev/null 2>&1; then
-  ok "TLS options (client certificates from the test CA) and the middleware pass-client-cert"
+  && k -n "$NAMESPACE" get tlsoption providers > /dev/null 2>&1 \
+  && k -n "$NAMESPACE" get middleware pass-client-cert > /dev/null 2>&1 \
+  && k -n "$NAMESPACE" get middleware provider-api > /dev/null 2>&1; then
+  ok "TLS options (a client certificate from the test CA required on the API's host) and the providers' middleware"
 else
   fail "Traefik's TLS options or middleware are missing (cluster/platform/edge.yaml)"
 fi
@@ -488,23 +507,31 @@ else
 fi
 
 # Creates or updates a login role and its own database, with the password from a Secret. The SQL goes in on
-# stdin, so the password is never on a command line.
-ensure_database() {
-  local name=$1 secret=$2 exists password
-  exists="$(k -n "$NAMESPACE" exec postgres-0 -- psql -U postgres -tAc \
-    "SELECT 1 FROM pg_database WHERE datname = '${name}'" 2> /dev/null || true)"
-  if [[ "$mode" == "check" ]]; then
-    if [[ "$exists" == "1" ]]; then ok "database ${name} exists"; else fail "database ${name} is missing"; fi
-    return
-  fi
-  password="$(k -n "$NAMESPACE" get secret "$secret" -o jsonpath='{.data.password}' | base64 -d)"
-  if k -n "$NAMESPACE" exec -i postgres-0 -- psql -v ON_ERROR_STOP=1 -q -U postgres -d postgres > /dev/null <<SQL; then
+# stdin, so the password is never on a command line. Fails when the Secret has no password or psql fails; callers
+# test it in an if, where set -e does not stop at a failed command.
+create_database() {
+  local name=$1 secret=$2 password
+  password="$(k -n "$NAMESPACE" get secret "$secret" -o jsonpath='{.data.password}' | base64 -d)" || return 1
+  [[ -n "$password" ]] || return 1
+  k -n "$NAMESPACE" exec -i postgres-0 -- psql -v ON_ERROR_STOP=1 -q -U postgres -d postgres > /dev/null <<SQL
 SELECT 'CREATE ROLE ${name} LOGIN'
   WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${name}')\gexec
 ALTER ROLE ${name} WITH LOGIN PASSWORD '${password}';
 SELECT 'CREATE DATABASE ${name} OWNER ${name}'
   WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${name}')\gexec
 SQL
+}
+
+# ensure_database NAME SECRET: the database a service needs, and its line in the summary.
+ensure_database() {
+  local name=$1 secret=$2 exists
+  exists="$(k -n "$NAMESPACE" exec postgres-0 -- psql -U postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname = '${name}'" 2> /dev/null || true)"
+  if [[ "$mode" == "check" ]]; then
+    if [[ "$exists" == "1" ]]; then ok "database ${name} exists"; else fail "database ${name} is missing"; fi
+    return
+  fi
+  if create_database "$name" "$secret"; then
     ok "database ${name} with its role, password from secret ${secret}"
   else
     fail "could not create database ${name}"
@@ -557,7 +584,12 @@ reset_keycloak_database() {
     fail "could not empty Keycloak's database"
     finish
   fi
-  ensure_database keycloak keycloak-db
+  # The databases step reported the database already; this reports the reset.
+  if ! create_database keycloak keycloak-db; then
+    fail "could not create Keycloak's database again after emptying it"
+    finish
+  fi
+  ok "Keycloak's database emptied (${1}), so Keycloak imports the realm afresh"
 }
 
 step "Keycloak"
@@ -614,11 +646,58 @@ until realm_answers; do
   if ((attempts <= 0)); then break; fi
   sleep 3
 done
+realm_reachable=0
 if ((attempts > 0)); then
+  realm_reachable=1
   ok "https://localhost:8443/realms/bank answers through Traefik with the test CA's certificate"
 else
   fail "Keycloak's realm bank does not answer on https://localhost:8443"
   note "curl -v --cacert ${PKI_DIR}/ca.crt https://localhost:8443/realms/bank/.well-known/openid-configuration"
+fi
+
+# --- the network policies ----------------------------------------------------------------------------------
+
+# The policies as kube-router enforces them, a few seconds after a change: the PostgreSQL pod cannot open a
+# connection to Keycloak, which no policy lets it do. Keycloak is up (it answered through Traefik), so a refused
+# connection is the policy. busybox's wget is in the postgres image; its error tells a refusal from anything else.
+# The probe is settled once the connection is refused, or when the probe cannot run at all.
+probe=""
+probe_result=""
+# shellcheck disable=SC2329  # called through wait_within
+keycloak_probe_settled() {
+  if probe="$(k -n "$NAMESPACE" exec postgres-0 -- \
+    wget -q -T 5 -O /dev/null http://keycloak:8080/realms/bank 2>&1)"; then
+    probe_result="reached"
+    return 1
+  fi
+  if [[ "$probe" == *"can't connect to remote host"* || "$probe" == *"download timed out"* ]]; then
+    probe_result="refused"
+  else
+    probe_result="unknown"
+  fi
+}
+
+step "network policies"
+if [[ "$mode" == "fix" ]]; then
+  k apply -f cluster/platform/network-policies.yaml > /dev/null
+fi
+if ! k -n "$NAMESPACE" get networkpolicy deny-ingress > /dev/null 2>&1; then
+  fail "the network policies are missing (cluster/platform/network-policies.yaml)"
+elif ((!realm_reachable)); then
+  fail "the network policies cannot be checked while Keycloak does not answer through Traefik"
+else
+  wait_within 30 "kube-router to enforce the network policies" keycloak_probe_settled || true
+  if [[ "$probe_result" == "refused" ]] && realm_answers; then
+    ok "network policies enforced: Keycloak refuses the PostgreSQL pod, Traefik still reaches it"
+  elif [[ "$probe_result" == "refused" ]]; then
+    fail "with the network policies Traefik no longer reaches Keycloak"
+    note "kubectl --context ${CONTEXT} -n ${NAMESPACE} describe networkpolicy keycloak-ingress"
+  elif [[ "$probe_result" == "reached" ]]; then
+    fail "the network policies are not enforced: the PostgreSQL pod still reaches Keycloak"
+    note "k3s enforces them unless its network policy controller is off (--disable-network-policy)"
+  else
+    fail "the network policies could not be checked from the PostgreSQL pod: ${probe}"
+  fi
 fi
 
 # --- the account Jenkins deploys with ----------------------------------------------------------------------
@@ -676,8 +755,10 @@ can() {
 }
 if [[ ! -f "$JENKINS_KUBECONFIG" ]]; then
   fail "${JENKINS_KUBECONFIG} is missing"
-elif [[ "$(can create deployments -n "$NAMESPACE")" == "yes" && "$(can create statefulsets -n "$NAMESPACE")" == "no" \
-  && "$(can get secrets -n kube-system)" == "no" ]]; then
+elif [[ "$(can create deployments -n "$NAMESPACE")" == "yes" \
+  && "$(can create ingressroutes.traefik.io -n "$NAMESPACE")" == "yes" \
+  && "$(can create statefulsets -n "$NAMESPACE")" == "no" && "$(can get secrets -n kube-system)" == "no" \
+  && "$(can delete networkpolicies -n "$NAMESPACE")" == "no" ]]; then
   ok "Jenkins' kubeconfig ${JENKINS_KUBECONFIG}: deploys in ${NAMESPACE}, nothing else"
 else
   fail "Jenkins' kubeconfig does not give exactly the deploy rights in ${NAMESPACE}: ${JENKINS_KUBECONFIG}"

@@ -38,6 +38,9 @@ route:
   # Traefik's middleware that passes the provider's client certificate on (cluster/platform/edge.yaml): Keycloak
   # binds the tokens it issues to it.
   clientCertificateMiddleware: pass-client-cert
+  # The same, then the provider's rate limit: for the endpoints only providers call (token, pushed authorization
+  # requests).
+  providerMiddleware: provider-api
 
 resources:
   requests:
