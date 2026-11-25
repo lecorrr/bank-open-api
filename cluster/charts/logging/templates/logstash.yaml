@@ -1,0 +1,141 @@
+# The masking script of Logstash's ruby filter, with its tests (masking/mask.rb).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-masking
+  labels:
+    app.kubernetes.io/name: logstash
+    {{- include "logging.labels" . | nindent 4 }}
+data:
+  mask.rb: |-
+{{ .Files.Get "masking/mask.rb" | indent 4 }}
+---
+# Logstash between Filebeat and Elasticsearch: it reads the services' JSON lines and masks personal data in every
+# event before Elasticsearch stores it, in the data stream logs-bank-default.
+apiVersion: logstash.k8s.elastic.co/v1alpha1
+kind: Logstash
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: logstash
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  version: {{ .Values.version }}
+  count: 1
+  elasticsearchRefs:
+    # ECK gives Logstash a user of this cluster: LOGS_ES_HOSTS, LOGS_ES_USER, LOGS_ES_PASSWORD and
+    # LOGS_ES_SSL_CERTIFICATE_AUTHORITY, named after clusterName.
+    - name: {{ .Release.Name }}
+      clusterName: logs
+  services:
+    # Filebeat's way in: the Service {{ .Release.Name }}-ls-beats.
+    - name: beats
+      service:
+        spec:
+          type: ClusterIP
+          ports:
+            - name: beats
+              port: 5044
+              targetPort: 5044
+              protocol: TCP
+  pipelines:
+    - pipeline.id: bank
+      # Two workers are plenty for the bank's logs and keep the memory down; the default is one a CPU.
+      pipeline.workers: 2
+      config.string: |
+        input {
+          beats {
+            port => 5044
+          }
+        }
+
+        filter {
+          # The services and Keycloak write one ECS JSON object a line, whose fields go to the event's root. A line
+          # that is not JSON, as PostgreSQL's, stays as it is, and the filter does not copy it into Logstash's log.
+          if [message] =~ /^\{/ {
+            json {
+              source => "message"
+              skip_on_invalid_json => true
+              # The lines are ECS already: with ECS compatibility the filter would only warn about the root.
+              ecs_compatibility => disabled
+            }
+          }
+          # The output names the data stream; the data_stream fields of a line would clash with its own.
+          mutate {
+            remove_field => ["[data_stream.type]", "[data_stream.dataset]", "[data_stream.namespace]"]
+          }
+          ruby {
+            id => "masking"
+            path => "/usr/share/logstash/masking/mask.rb"
+            script_params => { "pseudonym_key" => "${LOG_PSEUDONYM_KEY}" }
+            tag_on_exception => "_masking_failed"
+          }
+          # On an error the ruby filter passes the event on as it came: such an event is dropped, never stored.
+          # Logstash's own log names the error, without the event.
+          if "_masking_failed" in [tags] {
+            drop {}
+          }
+        }
+
+        output {
+          elasticsearch {
+            hosts => ["${LOGS_ES_HOSTS}"]
+            user => "${LOGS_ES_USER}"
+            password => "${LOGS_ES_PASSWORD}"
+            ssl_enabled => true
+            ssl_certificate_authorities => ["${LOGS_ES_SSL_CERTIFICATE_AUTHORITY}"]
+            data_stream => "true"
+            data_stream_type => "logs"
+            data_stream_dataset => "bank"
+            data_stream_namespace => "default"
+            # Every event to logs-bank-default, whatever fields it brings.
+            data_stream_auto_routing => false
+          }
+        }
+  resources:
+    {{- toYaml .Values.logstash.resources | nindent 4 }}
+  podTemplate:
+    metadata:
+      annotations:
+        # A changed masking script restarts Logstash, which then runs the script's tests again.
+        checksum/masking: {{ .Files.Get "masking/mask.rb" | sha256sum }}
+    spec:
+      # ECK sets only the fsGroup and the seccomp profile for Logstash; Pod Security "restricted" also needs a
+      # user that is not root and no capabilities, in every container. The init container is ECK's, named here
+      # so that ECK takes this security context for it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: logstash-internal-init-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: logstash
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: LS_JAVA_OPTS
+              value: {{ .Values.logstash.javaOpts | quote }}
+            - name: LOG_PSEUDONYM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.logstash.maskingSecret }}
+                  key: pseudonym-key
+          volumeMounts:
+            - name: masking
+              mountPath: /usr/share/logstash/masking
+              readOnly: true
+      volumes:
+        - name: masking
+          configMap:
+            name: {{ .Release.Name }}-masking

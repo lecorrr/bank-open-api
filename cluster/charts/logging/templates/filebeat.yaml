@@ -1,0 +1,120 @@
+# Filebeat on the node: it reads the log files of the bank's containers and sends every line to Logstash. It runs
+# as root, for the files are root's, in a namespace of its own whose Pod Security allows that and the node's
+# folders (cluster/platform/logging-namespaces.yaml); it keeps no capability and writes only its own data folder.
+apiVersion: beat.k8s.elastic.co/v1beta1
+kind: Beat
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.filebeat.namespace }}
+  labels:
+    app.kubernetes.io/name: filebeat
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  type: filebeat
+  version: {{ .Values.version }}
+  config:
+    filebeat.inputs:
+      - type: filestream
+        id: bank-containers
+        # A container's log is <pod>_<namespace>_<container>-<id>.log: the bank's namespace only.
+        paths:
+          - /var/log/containers/*_{{ .Values.filebeat.collectedNamespace }}_*.log
+        # The files there are links into /var/log/pods.
+        prospector.scanner.symlinks: true
+        parsers:
+          - container: {}
+        processors:
+          # The pod, container and labels of each line, looked up by the container id in the file's name.
+          - add_kubernetes_metadata:
+              host: ${NODE_NAME}
+              matchers:
+                - logs_path:
+                    logs_path: /var/log/containers/
+    output.logstash:
+      hosts:
+        - {{ .Release.Name }}-ls-beats.{{ .Release.Namespace }}.svc:5044
+  resources:
+    {{- toYaml .Values.filebeat.resources | nindent 4 }}
+  daemonSet:
+    podTemplate:
+      spec:
+        serviceAccountName: filebeat
+        automountServiceAccountToken: true
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: filebeat
+            securityContext:
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                  - ALL
+              readOnlyRootFilesystem: true
+            env:
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
+            volumeMounts:
+              - name: varlogcontainers
+                mountPath: /var/log/containers
+                readOnly: true
+              - name: varlogpods
+                mountPath: /var/log/pods
+                readOnly: true
+        volumes:
+          - name: varlogcontainers
+            hostPath:
+              path: /var/log/containers
+              type: Directory
+          - name: varlogpods
+            hostPath:
+              path: /var/log/pods
+              type: Directory
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: {{ .Values.filebeat.namespace }}
+  labels:
+    app.kubernetes.io/name: filebeat
+    {{- include "logging.labels" . | nindent 4 }}
+---
+# What add_kubernetes_metadata reads: pods and their namespaces and nodes, and the owners it names a pod's
+# Deployment or Job by. Read only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    {{- include "logging.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    {{- include "logging.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    namespace: {{ .Values.filebeat.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-filebeat

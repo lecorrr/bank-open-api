@@ -1,0 +1,58 @@
+# The Elastic Stack for the bank's logs, run by the ECK operator (cluster/eck-operator.yaml): one Elasticsearch
+# node, Kibana, Logstash and Filebeat. scripts/cluster-up.sh installs it as the release bank-logs in the namespace
+# logging; ECK names everything after the release (bank-logs-es-http, bank-logs-kb-http, bank-logs-ls-beats).
+
+# One version for all four; ECK 3.5 runs 8.x and 9.x.
+version: 9.5.7
+
+# Secret with the keys username, password and roles: the user Kibana's readers sign in as. scripts/cluster-up.sh
+# creates it.
+logReaderSecret: log-reader
+
+elasticsearch:
+  storage: 5Gi
+  # Elasticsearch takes half of its memory limit for its heap.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+
+kibana:
+  publicUrl: https://kibana.localhost:8443
+  # Kibana's route attaches to the bank's Gateway.
+  gateway:
+    name: bank-gateway
+    namespace: bank
+    listener: websecure
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+
+logstash:
+  # Secret with the key pseudonym-key, the key of the masking's pseudonyms; scripts/cluster-up.sh creates it.
+  maskingSecret: log-masking
+  # Half of the memory limit for the heap; JRuby and the beats input's buffers need the rest.
+  javaOpts: -Xms512m -Xmx512m
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+
+filebeat:
+  # Filebeat's own namespace, the one whose Pod Security lets it read the node's folders.
+  namespace: log-collector
+  # Whose logs it collects: the containers of this namespace.
+  collectedNamespace: bank
+  resources:
+    requests:
+      cpu: 50m
+      memory: 200Mi
+    limits:
+      memory: 300Mi

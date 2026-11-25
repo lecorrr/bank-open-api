@@ -1,0 +1,6 @@
+apiVersion: v2
+name: logging
+description: The bank's logs on ECK in the k3d cluster, Elasticsearch, Kibana, Logstash with masking and Filebeat
+type: application
+version: 0.1.0
+appVersion: "9.5.7"

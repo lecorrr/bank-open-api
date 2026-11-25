@@ -4,9 +4,9 @@ bank-core and bank-open-api run in a one-node Kubernetes cluster in Docker: k3d 
 with HTTPS, mutual TLS and providers' rate limits, Keycloak for the providers' and the customers' sign-in, network
 policies between them. Customers' browsers use the bank's address, `https://localhost:8443`; providers call the API
 on its own host, `https://api.localhost:8443`, where Traefik requires their client certificate. curl and systemd's
-resolver take any name under `localhost` to 127.0.0.1, so nothing goes into `/etc/hosts`. The stack needs about 4 GB of
-memory now; the ELK step adds about 3 GB more. Run the commands from `~/projects/bank-open-api` unless a step says
-otherwise.
+resolver take any name under `localhost` to 127.0.0.1, so nothing goes into `/etc/hosts`. The bank needs about
+4 GB of memory, and the logging stack about 4.5 GB more (Elasticsearch 2, Kibana 1, Logstash 1, Filebeat and the
+ECK operator the rest). Run the commands from `~/projects/bank-open-api` unless a step says otherwise.
 
 ## 1. The tools
 
@@ -26,13 +26,14 @@ bash scripts/install-tools.sh
 bash scripts/cluster-up.sh
 ```
 
-The first run downloads the k3s and Keycloak images and takes several minutes. It creates the cluster `bank` from
-`cluster/k3d.yaml` and switches kubectl to it, sets up Traefik, and makes:
+The first run downloads the k3s and Keycloak images, and about 3 GB for the logging stack, and takes ten minutes
+or more. It creates the cluster `bank` from `cluster/k3d.yaml` and switches kubectl to it, sets up Traefik, and
+makes:
 
 - the `bank` namespace;
 - the bank's test certificate authority, in `~/.config/bank-open-api/pki` (`ca.key` never leaves this machine),
-  and the certificates it signs: Traefik's server certificate for `localhost`, `api.localhost` and
-  `k3d-bank-serverlb`, and the client certificate of the test provider `smoke-test` (Secrets `bank-gateway-tls`,
+  and the certificates it signs: Traefik's server certificate for `localhost`, `api.localhost`, `kibana.localhost`
+  and `k3d-bank-serverlb`, and the client certificate of the test provider `smoke-test` (Secrets `bank-gateway-tls`,
   `smoke-test-provider`, `provider-ca`, and a copy of the provider's key and certificate in the same folder);
 - the HTTPS Gateway with Traefik's TLS options, a client certificate required on the API's host, and the
   middleware that passes it on and holds each provider to its rate limit (`cluster/platform/edge.yaml`);
@@ -45,11 +46,19 @@ The first run downloads the k3s and Keycloak images and takes several minutes. I
   test);
 - the network policies of the `bank` namespace (`cluster/platform/network-policies.yaml`): a pod there takes
   connections only from the callers its policy names, Traefik for bank-open-api and Keycloak;
-- the account Jenkins deploys with, and its kubeconfig in `~/.config/bank-open-api/jenkins-kubeconfig.yaml`.
+- the account Jenkins deploys with, and its kubeconfig in `~/.config/bank-open-api/jenkins-kubeconfig.yaml`;
+- the logs: the ECK operator 3.5.0 in `elastic-system` (Elastic's chart with `cluster/eck-operator.yaml`), and the
+  stack of `cluster/charts/logging`: one Elasticsearch node, Kibana and Logstash with the masking in `logging`,
+  Filebeat in `log-collector`, their network policies, the Secrets `log-masking` (the key of the masking's
+  pseudonyms) and `log-reader` (Kibana's reader), the lifecycle policy `bank-logs` (7 days) and Kibana's saved
+  search.
 
 It fetches Keycloak's discovery document through Traefik, which proves TLS, the route and the realm, and then
 checks the network policies are enforced: a connection from the PostgreSQL pod to Keycloak must be refused, while
-Keycloak still answers through Traefik.
+Keycloak still answers through Traefik. Last, it waits for the logging stack to be green (up to 15 minutes, as
+`LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh` can make longer), sends a canary line from a pod in `bank`
+with a made-up IBAN and a username, finds it in Elasticsearch masked, and checks that the PostgreSQL pod cannot
+reach Elasticsearch.
 Every run checks the lot again and fixes only what is missing or about to expire, so it is also how you start the
 cluster after `k3d cluster stop`. `--check` reports without changing anything.
 
@@ -61,8 +70,10 @@ new, `cluster-up.sh` empties Keycloak's database first and Keycloak imports the 
 hand in the admin console is gone then, as it should be: the realm file is the realm. From 0.4.0 it is the realm
 again, with the new scope `payments`; the summary says `Keycloak's database emptied (the realm file changed)`. From
 0.5.0 it is Traefik's certificate issued again with the API's host name, the new TLS options and middleware, the
-network policies, and the right for Jenkins' account to deploy the API's IngressRoute. It also puts this version's
-Traefik settings into the node, where k3s reads them again at every start.
+network policies, and the right for Jenkins' account to deploy the API's IngressRoute. From 0.6.1 it is the
+logging stack, Traefik's certificate issued again with Kibana's host, the Gateway taking Kibana's route from
+`logging`, and Keycloak restarted to write ECS JSON. It also puts this version's Traefik settings into the node,
+where k3s reads them again at every start.
 
 It uses these ports on 127.0.0.1 and stops if one is taken: 6550 (Kubernetes API), 8480 (HTTP, no routes since
 0.3.0), 8443 (HTTPS) and 5050 (image registry).
@@ -216,6 +227,40 @@ the user `artem.demo` (its Details tab shows Customer number C1001) and, under R
 policy `fapi-2-for-providers`. Changes made here last only until the realm file changes: `cluster-up.sh` then
 imports it afresh.
 
+## 5. The logs in Kibana
+
+Open `https://kibana.localhost:8443` (the browser warns about the test CA's certificate, as on the customer page;
+let it through, or import `~/.config/bank-open-api/pki/ca.crt` as an authority) and sign in as `log-reader`, who
+reads and changes nothing, with this password:
+
+```
+kubectl -n logging get secret log-reader -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+In Discover, open the saved search "Bank: requests by id": the bank's logs with the service, the level, the
+request's `http.request.id` and `trace.id`, and the message. To follow one request through bank-open-api and
+bank-core, put its `X-Request-ID` in the query bar, `http.request.id : "7f3e8a52-5d1b-4c6e-9a2f-0b8c4d6e1f3a"`, or
+its trace, `trace.id : "..."`. `service.name : "Keycloak"` shows Keycloak's events, with each user a pseudonym such
+as `username="masked-3f2a9c1e0b7d"`; `kubernetes.container.name : "postgres"` shows PostgreSQL's lines;
+`service.name : "log-canary"` shows `cluster-up.sh`'s canary lines, with their IBAN masked to the country code and
+the last four characters.
+
+The user `elastic` may change everything (the lifecycle policy, the data views); its password:
+
+```
+kubectl -n logging get secret bank-logs-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d; echo
+```
+
+The stack's health, as ECK sees it:
+
+```
+kubectl -n logging get elasticsearch,kibana,logstash
+```
+
+```
+kubectl -n log-collector get beat
+```
+
 ## Deploy by hand
 
 What Jenkins does, for when you want to try a chart change without a commit. In this repository, after
@@ -245,8 +290,8 @@ k3d cluster stop bank
 bash scripts/cluster-up.sh
 ```
 
-Delete it with its registry and volumes; `cluster-up.sh` builds a new one, and Jenkins then needs to be
-recreated as in bank-core's `docs/jenkins.md`:
+Delete it with its registry and volumes (the logs go with Elasticsearch's volume); `cluster-up.sh` builds a new
+one, and Jenkins then needs to be recreated as in bank-core's `docs/jenkins.md`:
 
 ```
 k3d cluster delete bank
@@ -294,6 +339,22 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
 - A provider's calls answer `429`: its rate limit (10 a second, bursts of 20) is used up; the answer's
   `Retry-After` says when to try again.
 
+- `the logging stack is not ready`: most often memory, a pod `Pending` with `Insufficient memory` (`kubectl -n
+  logging describe pod bank-logs-es-default-0`, Events at the end): stop what else takes memory, or give Docker
+  more. On the first run the images may still be coming: `LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh`.
+- Logstash restarts and its log says the masking script had failing tests (`kubectl -n logging logs
+  bank-logs-ls-0`): its own tests failed, and Logstash refuses to run a masking it cannot trust. The ConfigMap
+  `bank-logs-masking` holds another script than this version's `mask.rb`; run `bash scripts/cluster-up.sh`.
+- `the canary line did not reach Elasticsearch`: follow it. `kubectl -n bank logs log-canary-...` (the pod stays
+  for this) shows the line, `kubectl -n log-collector logs daemonset/bank-logs-beat-filebeat` whether Filebeat read
+  the file, `kubectl -n logging logs bank-logs-ls-0` whether Logstash sent it on.
+- `the canary line was stored with its IBAN or username unmasked`: the pipeline runs without the masking, and
+  until it is back the logs Elasticsearch takes in are not masked. `kubectl -n logging get logstash bank-logs -o
+  yaml` shows what Logstash runs; `bash scripts/cluster-up.sh` puts this version's pipeline back.
+- `Kibana does not answer on https://kibana.localhost:8443`: Traefik's certificate is from before 0.7.0 (run
+  `bash scripts/cluster-up.sh`, which issues it again), or Kibana is not green yet.
+- `a pod of the bank reaches Elasticsearch`: the logging stack's network policies are not enforced, as with the
+  bank's (`--disable-network-policy`).
 - `these ports it needs are taken`: another program or container has one of the ports. `ss -ltnp` shows which;
   change the port in `cluster/k3d.yaml` (and in the curl commands) or stop the other one.
 - A pod stays in `ImagePullBackOff`: the image is not in the registry. `curl -sS localhost:5050/v2/_catalog`

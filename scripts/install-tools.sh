@@ -8,7 +8,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="install-tools.sh"
-readonly PROJECT_VERSION="0.6.1"
+readonly PROJECT_VERSION="0.7.0"
 readonly K3D_VERSION="v5.9.0"
 readonly KUBECTL_VERSION="v1.36.6"
 readonly HELM_VERSION="v4.3.1"
@@ -24,7 +24,8 @@ for arg in "$@"; do
     --check) mode="check" ;;
     --force) force=1 ;;
     -h | --help)
-      sed -n '2,8p' "$0"
+      # The comment at the top of this file, up to its first line of code.
+      awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0"
       exit 0
       ;;
     *)

@@ -1,12 +1,14 @@
 # Architecture
 
-Version 0.6.1, step 6 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.7.0, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
 API's own host with the client certificate the token is bound to. It reads account data only under its own
 consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
-payments, which the customer approves on the same pages and the bank then makes as bank-core transfers. From this
-version the edge does more of the guarding: Traefik takes no connection to the API's host without a certificate
-from the bank's CA and holds each provider to a rate limit, and network policies leave Traefik the only way in.
+payments, which the customer approves on the same pages and the bank then makes as bank-core transfers. The edge
+does part of the guarding: Traefik takes no connection to the API's host without a certificate from the bank's CA
+and holds each provider to a rate limit, and network policies leave Traefik the only way in. From this version
+the logs of the bank's namespace go to Elasticsearch through Logstash, which masks personal data before anything
+is stored.
 
 ## Packages
 
@@ -339,29 +341,66 @@ provider ── GET https://api.localhost:8443/v2/accounts, client certificate, 
 on as `X-Request-Id`, the header bank-core logs under, and the RestClient from Spring Boot's builder sends the
 `traceparent`. bank-core's log lines about the request then carry the same request id and trace id.
 
+## The logs
+
+```
+a pod of the bank ── stdout ── containerd's file under /var/log/pods (a link to it in /var/log/containers)
+  └─ Filebeat bank-logs (log-collector, a DaemonSet): the files of the namespace bank, the container parser, the
+     pod's Kubernetes metadata
+       └─ Logstash bank-logs (logging), beats input :5044 (network policy: from Filebeat only)
+            ├─ json: an ECS line's fields to the event's root; PostgreSQL's plain lines stay as they are
+            ├─ mutate: a line's own data_stream fields dropped, the output names the data stream
+            ├─ ruby, mask.rb: personal data masked in every field; an event it cannot handle is dropped
+            └─ elasticsearch output, ECK's user for Logstash, TLS with ECK's CA
+                 └─ Elasticsearch bank-logs :9200: data stream logs-bank-default, ILM policy bank-logs
+                      └─ Kibana bank-logs :5601 (network policy: from Traefik only)
+                           └─ HTTPRoute kibana on bank-gateway: https://kibana.localhost:8443
+```
+
+What `cluster/charts/logging/masking/mask.rb` masks:
+
+| What | Where it is found | What is stored |
+|---|---|---|
+| IBANs, electronic or printed in groups of four | any text | the country code and the last four kept: `UA***********************6001` |
+| who: usernames, user ids, emails, first, last and full names, a creditor's or debtor's name | a field whose name holds one (`user.name`, `user.id`, `creditor.name`, `payment.debtorName`); `key="value"` as in Keycloak's events and `"key":"value"` in text | `masked-` and 12 hex characters of HMAC-SHA256 with the key in the Secret `log-masking`: one value, one pseudonym |
+| the values PostgreSQL quotes | `Key (...)=(...)` of a duplicate or missing key, `Failing row contains (...)` | `masked` |
+| passwords | `PASSWORD '...'` in SQL, `password=...` in text, a field named `password` | `masked` |
+
+What stays: IP addresses, the bank's own ids (customer numbers, consent, payment, request and trace ids) and the
+rest of each line. The script's tests sit at the end of the file; Logstash runs them each time it loads the
+pipeline and refuses to start if one fails.
+
+`cluster-up.sh` checks the whole way: it sends a canary line from a pod in `bank`, as the services write theirs,
+with a made-up IBAN, a username and a database detail, and looks for it in Elasticsearch, masked as `mask.rb`
+masks. Then a connection from the PostgreSQL pod to Elasticsearch must be refused.
+
 ## The cluster
 
 | Where | What | Made by |
 |---|---|---|
 | `kube-system` | Traefik with the Gateway API provider, CoreDNS, local-path storage | k3s, `cluster/traefik-config.yaml` |
 | `bank` | namespace with the "restricted" Pod Security Standard | `scripts/cluster-up.sh` |
-| `bank` | Gateway `bank-gateway` (HTTPS), Traefik's TLS options (`default`, and `providers` for the API's host), default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
+| `bank` | Gateway `bank-gateway` (HTTPS, routes from `bank` and `logging`), Traefik's TLS options (`default`, and `providers` for the API's host), default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
 | `bank` | network policies: no ingress unless allowed; Traefik to bank-open-api and Keycloak, bank-open-api to bank-core, Keycloak and PostgreSQL, Keycloak and bank-core to PostgreSQL (`cluster/platform/network-policies.yaml`) | `scripts/cluster-up.sh` |
 | `bank` | PostgreSQL (`postgres`) with the databases `bank`, `openbanking` and `keycloak`, Keycloak (`keycloak`) with the realm `bank` (clients `smoke-test` and `bank-approval`, test customer `artem.demo`), their Secrets, account `jenkins-deployer` | `scripts/cluster-up.sh` |
 | `bank` | `bank-core`: Deployment, Service; `bank-open-api`: Deployment, Service, HTTPRoute (pages), IngressRoute (the API's host) | Jenkins, with Helm |
+| `elastic-system` | the ECK operator 3.5.0 (Helm release `elastic-operator`, Elastic's chart with `cluster/eck-operator.yaml`); "restricted" | `scripts/cluster-up.sh` |
+| `logging` | Elasticsearch, Kibana and Logstash `bank-logs` (Helm release `bank-logs`, `cluster/charts/logging`), Kibana's route, their network policies, the Secrets `log-masking` and `log-reader`; "restricted" | `scripts/cluster-up.sh` |
+| `log-collector` | Filebeat `bank-logs`, a DaemonSet; "privileged", for the node's log folders | `scripts/cluster-up.sh` |
 | Docker | registry `k3d-bank-registry`, on this machine `localhost:5050` | k3d |
 | this machine | the test CA's key and certificate, a copy of the smoke-test provider's and of the test customer's password, in `~/.config/bank-open-api/pki` | `scripts/cluster-up.sh` |
 
 Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS into Traefik (the bank's address
-`localhost` and the API's host `api.localhost`, which curl and systemd's resolver take to 127.0.0.1), 5050 the
-registry. 8480, Traefik's HTTP entry point, has no routes.
+`localhost`, the API's host `api.localhost` and Kibana's `kibana.localhost`, which curl and systemd's resolver take
+to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no routes.
 
 ## Rules
 
 - **The contract leads**: the code is generated from it, and what the bank does not offer is refused with the
   contract's codes rather than ignored.
 - **Logs name consents and payments, not people**: their ids, counts, statuses and bank-core's error codes, never
-  IBANs, names, purposes or amounts.
+  IBANs, names, purposes or amounts. What still reaches a line (a library's exception, Keycloak's events,
+  PostgreSQL's details) is masked before it is stored.
 - **Configuration** comes from environment variables (`BANK_CORE_URL`, `DB_URL`, `DB_USER`, `DB_PASSWORD`,
   `PROVIDER_TOKENS_ISSUER`, `PROVIDER_TOKENS_JWK_SET_URI`, `PUBLIC_URL`, `API_URL`, `CUSTOMER_SIGN_IN_TOKEN_URI`,
   `CUSTOMER_SIGN_IN_CLIENT_SECRET`, `LOGGING_STRUCTURED_FORMAT_CONSOLE`), which the Helm chart sets; the database
@@ -490,6 +529,39 @@ registry. 8480, Traefik's HTTP entry point, has no routes.
 - **`endToEndId` is kept, not passed on.** bank-core's transfer API has no field for it yet, so the payee's bank
   does not see it; the provider gets it back with the payment.
 
+- **Masked in Logstash as well, not only kept out by the services.** The services log ids, not people, but a
+  library's exception can quote a database row (pgjdbc's `Detail: Failing row contains (...)`), Keycloak's events
+  name users, and PostgreSQL's own log quotes keys. One filter before storage covers every source, whoever wrote
+  the line.
+- **Pseudonyms for who, the last four digits for accounts.** Support can still see that fifty failed sign-ins were
+  one account, and which account by its last four digits, as on a statement, without seeing the person. The
+  pseudonym is a keyed HMAC, so nobody can hash a list of likely usernames to find one; the key sits in a Secret
+  only Logstash reads.
+- **Anything shaped like an IBAN is masked, valid or not.** A rejected IBAN in a validation message is still
+  someone's account number, and masking a string that only looks like one costs nothing. Lowercase ids never match.
+- **Fail closed.** On an error the ruby filter passes the event on as it came; the pipeline drops such an event
+  instead, and Logstash's own log names the error, not the event.
+- **IP addresses stay.** They are what a security team blocks, and the logs live 7 days.
+- **Filebeat reads the node's files, as root, in a namespace of its own.** Shipping from the services (an appender
+  sending to Logstash) would put the logging stack on their requests' way and need bank-core changed. Reading the
+  files needs hostPath and root, which "restricted" and "baseline" forbid, so `log-collector` allows them and holds
+  nothing else.
+- **Plain TCP from Filebeat to Logstash.** Both run on this one node, the beats input takes connections from
+  Filebeat's pods only, and the masking happens in Logstash. Several nodes would call for TLS with client
+  certificates, which ECK 3.5 sets up for Beats and Logstash.
+- **One Elasticsearch node.** No replicas (so the cluster stays green), `node.store.allow_mmap: false` so that no
+  machine needs `vm.max_map_count` raised, 2 GB of memory, 5 GB of disk.
+- **7 days through `logs@custom`.** Elasticsearch's own `logs` template takes that component template when it
+  exists, the way Elastic means its managed templates to be changed; its built-in ILM policy keeps logs for ever.
+- **Elasticsearch and Kibana set up through Kibana's API.** The lifecycle goes in through Kibana's console proxy and
+  the saved search through its saved objects API, over the Gateway like a browser, so `cluster-up.sh` needs no port
+  into the cluster.
+- **A canary to prove it.** The script's tests prove the masking; only a line that went the whole way proves
+  Filebeat's glob, the json filter, the script mounted where the pipeline looks for it and the output's data
+  stream. Its IBAN has the check digits 00, which no real IBAN has.
+- **Kibana on the bank's Gateway.** A host of its own on the same certificate, and a reader with the role viewer; a
+  bank would put Kibana behind its staff's sign-in, on an internal address.
+
 ## Extending it
 
 - **Endpoint**: its operation from GD Next's YAML into `bank-open-api.yaml`, then the generated method in a
@@ -516,3 +588,7 @@ registry. 8480, Traefik's HTTP entry point, has no routes.
   it (and in PostgreSQL's policy, if it keeps data there).
 - **Provider-only endpoint at Keycloak**: its path in the first rule of Keycloak's route, the one with the
   rate-limited middleware.
+- **Something more to mask**: a field name in `IDENTITY_FIELDS` of `mask.rb`, or a pattern beside the others, and a
+  test block at the end of the file; Logstash runs it at its next start.
+- **Another namespace's logs**: Filebeat's `collectedNamespace` in the logging chart's values (or a second path in
+  its input), and a test in `mask.rb` for what that namespace writes.

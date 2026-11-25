@@ -1,0 +1,113 @@
+# Who may connect to the logging stack's pods, as in the bank's namespace: nothing comes in unless a policy below
+# lets it. Kibana takes Traefik; Elasticsearch takes Kibana, Logstash and the ECK operator; Logstash takes
+# Filebeat. The bank's pods have no way in: their logs leave as files on the node, which Filebeat reads. The
+# kubelet's probes come from the node, which kube-router lets through. scripts/cluster-up.sh checks that a pod of
+# the bank cannot reach Elasticsearch.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elasticsearch-ingress
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      elasticsearch.k8s.elastic.co/cluster-name: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Kibana and Logstash, and the operator, which runs the cluster through its API.
+    - from:
+        - podSelector:
+            matchLabels:
+              kibana.k8s.elastic.co/name: {{ .Release.Name }}
+        - podSelector:
+            matchLabels:
+              logstash.k8s.elastic.co/name: {{ .Release.Name }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: elastic-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elastic-operator
+      ports:
+        - port: https
+    # The nodes among themselves, should there be more than one.
+    - from:
+        - podSelector:
+            matchLabels:
+              elasticsearch.k8s.elastic.co/cluster-name: {{ .Release.Name }}
+      ports:
+        - port: transport
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kibana-ingress
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      kibana.k8s.elastic.co/name: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: http
+---
+# Logstash's beats input has no sign-in: this policy is what keeps anyone else from sending it lines.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: logstash-ingress
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      logstash.k8s.elastic.co/name: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.filebeat.namespace }}
+          podSelector:
+            matchLabels:
+              beat.k8s.elastic.co/name: {{ .Release.Name }}
+      ports:
+        - port: 5044
+          protocol: TCP
+---
+# Filebeat serves nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress
+  namespace: {{ .Values.filebeat.namespace }}
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress

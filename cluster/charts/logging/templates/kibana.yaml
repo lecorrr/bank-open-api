@@ -1,0 +1,54 @@
+# Kibana for the bank's logs, at its own address through the bank's Gateway. Traefik ends TLS, so Kibana speaks
+# plain HTTP inside the cluster, where only Traefik may reach it (network-policies.yaml).
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: kibana
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  version: {{ .Values.version }}
+  count: 1
+  elasticsearchRef:
+    name: {{ .Release.Name }}
+  config:
+    server.publicBaseUrl: {{ .Values.kibana.publicUrl | quote }}
+    telemetry.optIn: false
+    telemetry.allowChangingOptInStatus: false
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: true
+  resources:
+    {{- toYaml .Values.kibana.resources | nindent 4 }}
+  podTemplate:
+    spec:
+      # ECK runs Kibana as user 1000 but does not say runAsNonRoot, which Pod Security "restricted" needs. A pod
+      # security context given here replaces ECK's whole one, so its fsGroup and seccomp profile are here too.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+---
+# Kibana's address: a host of its own on the bank's Gateway, which admits routes from this namespace
+# (cluster/platform/gateway.yaml) and whose certificate names it (scripts/cluster-up.sh).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kibana
+  labels:
+    app.kubernetes.io/name: kibana
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.kibana.gateway.name }}
+      namespace: {{ .Values.kibana.gateway.namespace }}
+      sectionName: {{ .Values.kibana.gateway.listener }}
+  hostnames:
+    - {{ (urlParse .Values.kibana.publicUrl).hostname | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ .Release.Name }}-kb-http
+          port: 5601

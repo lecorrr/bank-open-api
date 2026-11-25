@@ -1,0 +1,18 @@
+# Settings for Elastic's chart eck-operator (https://helm.elastic.co): the operator that runs Elasticsearch, Kibana,
+# Logstash and Filebeat for the bank's logs. scripts/cluster-up.sh installs it, at the version it pins, as the
+# release elastic-operator in the namespace elastic-system (cluster/platform/logging-namespaces.yaml).
+
+# The operator looks after these namespaces only.
+managedNamespaces:
+  - logging
+  - log-collector
+
+# Pod Security "restricted" in elastic-system: the chart's own default has no seccomp profile.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# No usage reports to Elastic.
+telemetry:
+  disabled: true

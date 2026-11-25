@@ -1,0 +1,36 @@
+# One Elasticsearch node for the bank's logs. ECK makes the rest: its TLS certificates, the user elastic (Secret
+# bank-logs-es-elastic-user), the Service bank-logs-es-http and a StatefulSet whose pods meet Pod Security
+# "restricted" with ECK's own security context. How long the logs stay: scripts/cluster-up.sh sets it.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  version: {{ .Values.version }}
+  auth:
+    # Who reads the logs in Kibana: the user in this Secret, with the role viewer, which reads the indices and
+    # Kibana's apps and changes nothing.
+    fileRealm:
+      - secretName: {{ .Values.logReaderSecret }}
+  nodeSets:
+    - name: default
+      count: 1
+      config:
+        # Elasticsearch maps its files into memory unless told not to, and then refuses to start where
+        # vm.max_map_count is under 262144, as it is on many machines. One node with a few gigabytes loses little.
+        node.store.allow_mmap: false
+      resources:
+        {{- toYaml .Values.elasticsearch.resources | nindent 8 }}
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: local-path
+            resources:
+              requests:
+                storage: {{ .Values.elasticsearch.storage }}

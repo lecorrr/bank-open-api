@@ -2,18 +2,20 @@
 # cluster-up.sh: creates the k3d cluster "bank" and its platform: the bank namespace, the bank's test certificate
 # authority with the certificates it signs, Traefik's HTTPS Gateway and its TLS (a client certificate required on
 # the API's host), PostgreSQL with a database for bank-core, bank-open-api and Keycloak, Keycloak with the realm
-# "bank" (its clients and the test customer), the namespace's network policies, and the account Jenkins deploys
-# with. Safe to run again: it creates or fixes only what is missing, starts the cluster if it was stopped, restarts
-# it if its node came up without DNS, and has Keycloak import the realm afresh when the realm file changed. The
-# services themselves come from Jenkins (docs/cluster.md).
+# "bank" (its clients and the test customer), the namespace's network policies, the account Jenkins deploys with,
+# and the bank's logs: the ECK operator, Elasticsearch, Kibana, Logstash, which masks personal data, and Filebeat
+# (scripts/cluster-up-logging.sh). Safe to run again: it creates or fixes only what is missing, starts the cluster
+# if it was stopped, restarts it if its node came up without DNS, and has Keycloak import the realm afresh when the
+# realm file changed. The services themselves come from Jenkins (docs/cluster.md).
 #
 #   bash scripts/cluster-up.sh --check   report, change nothing
 #   bash scripts/cluster-up.sh           create or fix what is missing
 #   KEYCLOAK_WAIT_SECONDS=900 bash scripts/cluster-up.sh   more time for Keycloak's start (default 600 seconds)
+#   LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh   more time for the logging stack (default 900 seconds)
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.6.1"
+readonly PROJECT_VERSION="0.7.0"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"
@@ -43,7 +45,8 @@ for arg in "$@"; do
   case "$arg" in
     --check) mode="check" ;;
     -h | --help)
-      sed -n '2,13p' "$0"
+      # The comment at the top of this file, up to its first line of code.
+      awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0"
       exit 0
       ;;
     *)
@@ -55,9 +58,16 @@ done
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
-if [[ ! -f cluster/k3d.yaml || ! -d cluster/charts/postgres || ! -d cluster/charts/keycloak ]]; then
+if [[ ! -f cluster/k3d.yaml || ! -d cluster/charts/postgres || ! -d cluster/charts/keycloak \
+  || ! -f scripts/cluster-up-logging.sh ]]; then
   echo "FAIL  ${project_dir} is not the unpacked bank-open-api project: cluster/ is missing" >&2
   exit 1
+fi
+# shellcheck source=scripts/cluster-up-logging.sh
+source scripts/cluster-up-logging.sh
+if [[ ! "$LOGGING_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "LOGGING_WAIT_SECONDS must be a number of seconds, got '${LOGGING_WAIT_SECONDS}'" >&2
+  exit 2
 fi
 
 # Keys and certificates are made here, in a folder only this run sees.
@@ -383,12 +393,12 @@ if [[ -s "${PKI_DIR}/ca.crt" ]]; then
       --dry-run=client -o yaml | k apply -f - > /dev/null
     ok "secret provider-ca set to the test CA"
   fi
-  # The names Traefik's certificate answers to: the bank's address and the API's host on this machine, and k3d's
-  # load balancer for Jenkins. A certificate from before 0.6.0, without the API's host, is issued again.
+  # The names Traefik's certificate answers to: the bank's address, the API's host and Kibana's on this machine,
+  # and k3d's load balancer for Jenkins. A certificate of an earlier version, without one of them, is issued again.
   ensure_certificate_secret bank-gateway-tls "/O=bank-open-api test/CN=localhost" \
     "$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
       'extendedKeyUsage=serverAuth' \
-      'subjectAltName=DNS:localhost,DNS:api.localhost,DNS:k3d-bank-serverlb,IP:127.0.0.1')"
+      'subjectAltName=DNS:localhost,DNS:api.localhost,DNS:kibana.localhost,DNS:k3d-bank-serverlb,IP:127.0.0.1')"
   # The test provider "smoke-test": Keycloak's client of that name and scripts/smoke-test.sh.
   ensure_certificate_secret smoke-test-provider "/O=bank-open-api test/CN=smoke-test" \
     "$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' \
@@ -429,13 +439,14 @@ fi
 
 # --- secrets -----------------------------------------------------------------------------------------------
 
-# Creates a Secret from key=value pairs if it does not exist yet; "random" becomes a new password. The values
-# go to kubectl through a file descriptor, never on a command line. Remembers which Secrets it created.
+# ensure_secret NAMESPACE NAME KEY=VALUE...: creates a Secret if it does not exist yet; "random" becomes a new
+# password. The values go to kubectl through a file descriptor, never on a command line. Remembers which Secrets
+# it created; one it cannot create ends the run, as everything after needs it.
 created_secrets=()
 ensure_secret() {
-  local name=$1 pair key value lines=""
-  shift
-  if k -n "$NAMESPACE" get secret "$name" > /dev/null 2>&1; then
+  local namespace=$1 name=$2 pair key value lines=""
+  shift 2
+  if k -n "$namespace" get secret "$name" > /dev/null 2>&1; then
     ok "secret ${name} exists"
     return
   fi
@@ -449,20 +460,23 @@ ensure_secret() {
     if [[ "$value" == "random" ]]; then value="$(openssl rand -hex 24)"; fi
     lines+="${key}=${value}"$'\n'
   done
-  k -n "$NAMESPACE" create secret generic "$name" --from-env-file=<(printf '%s' "$lines") > /dev/null
+  if ! k -n "$namespace" create secret generic "$name" --from-env-file=<(printf '%s' "$lines") > /dev/null; then
+    fail "could not create secret ${name} in namespace ${namespace}"
+    finish
+  fi
   created_secrets+=("$name")
   ok "secret ${name} created"
 }
 
 step "secrets"
-ensure_secret postgres-admin password=random
-ensure_secret bank-core-db username=bank password=random
-ensure_secret bank-open-api-db username=openbanking password=random
-ensure_secret keycloak-db username=keycloak password=random
-ensure_secret keycloak-admin username=admin password=random
+ensure_secret "$NAMESPACE" postgres-admin password=random
+ensure_secret "$NAMESPACE" bank-core-db username=bank password=random
+ensure_secret "$NAMESPACE" bank-open-api-db username=openbanking password=random
+ensure_secret "$NAMESPACE" keycloak-db username=keycloak password=random
+ensure_secret "$NAMESPACE" keycloak-admin username=admin password=random
 # Named in the realm file: the secret of bank-open-api's client for the customer pages, and the test customer.
-ensure_secret bank-approval-client client-secret=random
-ensure_secret test-customer username=artem.demo password=random
+ensure_secret "$NAMESPACE" bank-approval-client client-secret=random
+ensure_secret "$NAMESPACE" test-customer username=artem.demo password=random
 
 # scripts/smoke-test.sh signs in as the test customer with this copy of the password, as it uses the provider's
 # key from the same folder. Written without a line break, readable by this user only.
@@ -758,12 +772,18 @@ if [[ ! -f "$JENKINS_KUBECONFIG" ]]; then
 elif [[ "$(can create deployments -n "$NAMESPACE")" == "yes" \
   && "$(can create ingressroutes.traefik.io -n "$NAMESPACE")" == "yes" \
   && "$(can create statefulsets -n "$NAMESPACE")" == "no" && "$(can get secrets -n kube-system)" == "no" \
-  && "$(can delete networkpolicies -n "$NAMESPACE")" == "no" ]]; then
+  && "$(can delete networkpolicies -n "$NAMESPACE")" == "no" && "$(can get secrets -n logging)" == "no" ]]; then
   ok "Jenkins' kubeconfig ${JENKINS_KUBECONFIG}: deploys in ${NAMESPACE}, nothing else"
 else
   fail "Jenkins' kubeconfig does not give exactly the deploy rights in ${NAMESPACE}: ${JENKINS_KUBECONFIG}"
 fi
 
+# --- the bank's logs ---------------------------------------------------------------------------------------
+
+logging_up
+
 note "next: Jenkins with the cluster, then the bank-core and bank-open-api jobs (docs/cluster.md)"
 note "Keycloak's admin console: kubectl --context ${CONTEXT} -n ${NAMESPACE} port-forward svc/keycloak 8082:8080"
+note "the logs: ${KIBANA_URL}, user log-reader, password: kubectl --context ${CONTEXT} -n logging get secret \\"
+note "  log-reader -o jsonpath='{.data.password}' | base64 -d"
 finish

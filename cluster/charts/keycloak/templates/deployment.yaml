@@ -79,6 +79,12 @@ spec:
               value: traefik
             - name: KC_HEALTH_ENABLED
               value: "true"
+            # ECS JSON on the console, as the services write theirs: the logging stack reads it field by field and
+            # masks the usernames in Keycloak's events (cluster/charts/logging).
+            - name: KC_LOG_CONSOLE_OUTPUT
+              value: json
+            - name: KC_LOG_CONSOLE_JSON_FORMAT
+              value: ecs
             # The realm file names it as ${SMOKE_TEST_CERTIFICATE}: the key that signs the provider's JWTs.
             - name: SMOKE_TEST_CERTIFICATE
               valueFrom:
