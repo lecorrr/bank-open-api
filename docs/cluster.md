@@ -58,7 +58,7 @@ checks the network policies are enforced: a connection from the PostgreSQL pod t
 Keycloak still answers through Traefik. Last, it waits for the logging stack to be green (up to 15 minutes, as
 `LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh` can make longer), sends a canary line from a pod in `bank`
 with a made-up IBAN and a username, finds it in Elasticsearch masked, and checks that the PostgreSQL pod cannot
-reach Elasticsearch.
+reach Elasticsearch. Elasticsearch's API it calls through a port-forward of its own, which ends with the run.
 Every run checks the lot again and fixes only what is missing or about to expire, so it is also how you start the
 cluster after `k3d cluster stop`. `--check` reports without changing anything.
 
@@ -72,8 +72,9 @@ again, with the new scope `payments`; the summary says `Keycloak's database empt
 0.5.0 it is Traefik's certificate issued again with the API's host name, the new TLS options and middleware, the
 network policies, and the right for Jenkins' account to deploy the API's IngressRoute. From 0.6.1 it is the
 logging stack, Traefik's certificate issued again with Kibana's host, the Gateway taking Kibana's route from
-`logging`, and Keycloak restarted to write ECS JSON. It also puts this version's Traefik settings into the node,
-where k3s reads them again at every start.
+`logging`, and Keycloak restarted to write ECS JSON. From 0.7.0 nothing in the cluster changes: the run finishes
+what 0.7.0's stopped at, the lifecycle policy, the saved search, the canary and the logging stack's probe. It also
+puts this version's Traefik settings into the node, where k3s reads them again at every start.
 
 It uses these ports on 127.0.0.1 and stops if one is taken: 6550 (Kubernetes API), 8480 (HTTP, no routes since
 0.3.0), 8443 (HTTPS) and 5050 (image registry).
@@ -353,6 +354,12 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
   yaml` shows what Logstash runs; `bash scripts/cluster-up.sh` puts this version's pipeline back.
 - `Kibana does not answer on https://kibana.localhost:8443`: Traefik's certificate is from before 0.7.0 (run
   `bash scripts/cluster-up.sh`, which issues it again), or Kibana is not green yet.
+- `kubectl could not forward a port to Elasticsearch`: kubectl's own words follow. Most often Elasticsearch's pod
+  is not running (`kubectl -n logging get pods`); the port-forward goes to the Service `bank-logs-es-http`.
+- `ECK's Secret bank-logs-es-http-certs-public in logging has no CA for Elasticsearch`, or `Elasticsearch does not
+  answer through the port-forward`: ECK makes that Secret with Elasticsearch's certificate, so the operator did
+  not get that far (`kubectl -n elastic-system logs statefulset/elastic-operator`), or the Secret
+  `bank-logs-es-elastic-user` no longer holds the password Elasticsearch has.
 - `a pod of the bank reaches Elasticsearch`: the logging stack's network policies are not enforced, as with the
   bank's (`--disable-network-policy`).
 - `these ports it needs are taken`: another program or container has one of the ports. `ss -ltnp` shows which;

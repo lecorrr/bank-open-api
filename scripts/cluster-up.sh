@@ -15,7 +15,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.7.0"
+readonly PROJECT_VERSION="0.7.1"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"
@@ -70,9 +70,10 @@ if [[ ! "$LOGGING_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-# Keys and certificates are made here, in a folder only this run sees.
+# Keys and certificates are made here, in a folder only this run sees. On exit, Ctrl-C included, it goes, and so
+# does the port-forward to Elasticsearch if one is open.
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'es_tunnel_close; rm -rf "$work"' EXIT
 
 results=()
 failures=0

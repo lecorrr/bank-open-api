@@ -1,6 +1,6 @@
 # Architecture
 
-Version 0.7.0, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.7.1, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
 API's own host with the client certificate the token is bound to. It reads account data only under its own
 consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
@@ -553,9 +553,12 @@ to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no route
   machine needs `vm.max_map_count` raised, 2 GB of memory, 5 GB of disk.
 - **7 days through `logs@custom`.** Elasticsearch's own `logs` template takes that component template when it
   exists, the way Elastic means its managed templates to be changed; its built-in ILM policy keeps logs for ever.
-- **Elasticsearch and Kibana set up through Kibana's API.** The lifecycle goes in through Kibana's console proxy and
-  the saved search through its saved objects API, over the Gateway like a browser, so `cluster-up.sh` needs no port
-  into the cluster.
+- **Kibana through the Gateway, Elasticsearch through a port-forward.** `cluster-up.sh` imports the saved search
+  with Kibana's saved objects API, over the Gateway like a browser, and sets the lifecycle with Elasticsearch's own
+  API through `kubectl port-forward`, checked against ECK's CA. The Kubernetes API carries that connection into the
+  pod, past the network policies, and opens no port. 0.7.0 went through Kibana's console proxy, which Kibana 9
+  refuses to outside clients as an internal API; the header Kibana's own pages send would have let it through, but
+  that leans on an API Kibana does not promise to keep.
 - **A canary to prove it.** The script's tests prove the masking; only a line that went the whole way proves
   Filebeat's glob, the json filter, the script mounted where the pipeline looks for it and the output's data
   stream. Its IBAN has the check digits 00, which no real IBAN has.

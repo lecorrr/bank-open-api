@@ -1,10 +1,11 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2153,SC2154  # mode, NAMESPACE, CONTEXT and PKI_DIR are cluster-up.sh's
 # cluster-up-logging.sh: the logs part of scripts/cluster-up.sh, which sources it and runs logging_up last. It
-# installs the ECK operator and the logging stack (cluster/charts/logging) with their Secrets, has Elasticsearch
-# keep the logs 7 days, gives Kibana a saved search, sends a canary line that must arrive masked, and checks that
-# no pod of the bank reaches Elasticsearch. It uses cluster-up.sh's settings and helpers (k, h, ok, fail, note,
-# step, wait_within, ensure_secret); it is not run on its own.
+# installs the ECK operator and the logging stack (cluster/charts/logging) with their Secrets, gives Kibana a saved
+# search, has Elasticsearch keep the logs 7 days, sends a canary line that must arrive masked, and checks that no
+# pod of the bank reaches Elasticsearch. Kibana it calls through the bank's Gateway, Elasticsearch through a
+# port-forward. It uses cluster-up.sh's settings and helpers (k, h, ok, fail, note, step, wait_within,
+# ensure_secret, the folder work); it is not run on its own.
 : "${mode:?}" "${NAMESPACE:?}" "${CONTEXT:?}" "${PKI_DIR:?}"
 
 readonly ECK_VERSION="3.5.0"
@@ -62,19 +63,62 @@ kibana_call() {
     -w '\n%{http_code}' "$@" "${KIBANA_URL}${path}" 2> /dev/null || true
 }
 
-# es_call METHOD PATH [CURL ARGUMENTS...]: an Elasticsearch API call through Kibana's console proxy, the way
-# Kibana's Dev Tools make them, so this script needs no port into the cluster. Prints as kibana_call does.
-es_call() {
-  local method=$1 path=$2 encoded="" char i
-  shift 2
-  for ((i = 0; i < ${#path}; i++)); do
-    char="${path:i:1}"
-    case "$char" in
-      [a-zA-Z0-9._~/-]) encoded+="$char" ;;
-      *) printf -v char '%%%02X' "'$char" && encoded+="$char" ;;
-    esac
+# Elasticsearch's own API goes through a port-forward: the Kubernetes API carries the connection into the pod, so
+# the network policies that keep the bank's pods out of Elasticsearch do not apply, and no port is opened. Kibana's
+# console proxy would need no port either, but it is an internal API, which Kibana 9 refuses to outside clients.
+# ECK's CA for Elasticsearch checks the connection; the certificate names the service.
+readonly ES_SERVICE="${LOGGING_RELEASE}-es-http"
+es_tunnel_pid=""
+es_port=""
+
+# es_tunnel_open: the port-forward, on a free local port kubectl picks, and a first call through it.
+es_tunnel_open() {
+  local log="${work:?}/es-port-forward.log" tries
+  step "Elasticsearch's API"
+  k -n "$LOGGING_NAMESPACE" get secret "${ES_SERVICE}-certs-public" -o jsonpath='{.data.ca\.crt}' 2> /dev/null \
+    | base64 -d > "${work}/es-ca.crt" 2> /dev/null || true
+  if [[ ! -s "${work}/es-ca.crt" ]]; then
+    fail "ECK's Secret ${ES_SERVICE}-certs-public in ${LOGGING_NAMESPACE} has no CA for Elasticsearch"
+    return 1
+  fi
+  # kubectl itself rather than k, so that the PID is kubectl's and closing the port-forward ends it.
+  kubectl --context "$CONTEXT" -n "$LOGGING_NAMESPACE" port-forward "svc/${ES_SERVICE}" :9200 > "$log" 2>&1 &
+  es_tunnel_pid=$!
+  for ((tries = 0; tries < 50; tries++)); do
+    es_port="$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9][0-9]*\) -> .*/\1/p' "$log" | head -n 1)"
+    if [[ -n "$es_port" ]]; then break; fi
+    sleep 0.2
   done
-  kibana_call POST "/api/console/proxy?method=${method}&path=${encoded}" "$@"
+  if [[ -z "$es_port" ]]; then
+    fail "kubectl could not forward a port to Elasticsearch: $(head -c 300 "$log")"
+    es_tunnel_close
+    return 1
+  fi
+  if [[ "$(status_of "$(es_call GET /)")" != 200 ]]; then
+    fail "Elasticsearch does not answer through the port-forward to ${ES_SERVICE}, or not with ECK's certificate"
+    es_tunnel_close
+    return 1
+  fi
+  ok "Elasticsearch answers through a port-forward, its certificate checked against ECK's CA"
+}
+
+# es_tunnel_close: ends the port-forward. cluster-up.sh calls it on exit too, so Ctrl-C leaves none running.
+es_tunnel_close() {
+  if [[ -n "$es_tunnel_pid" ]]; then
+    kill "$es_tunnel_pid" 2> /dev/null || true
+    wait "$es_tunnel_pid" 2> /dev/null || true
+    es_tunnel_pid=""
+  fi
+}
+
+# es_call METHOD PATH [CURL ARGUMENTS...]: Elasticsearch's API through the port-forward, as the user elastic.
+# Prints as kibana_call does.
+es_call() {
+  local method=$1 path=$2
+  shift 2
+  curl -sS --max-time 30 --cacert "${work}/es-ca.crt" --resolve "${ES_SERVICE}:${es_port}:127.0.0.1" \
+    -K <(printf 'user = "elastic:%s"\n' "$elastic_password") -X "$method" -w '\n%{http_code}' "$@" \
+    "https://${ES_SERVICE}:${es_port}/${path#/}" 2> /dev/null || true
 }
 
 # status_of ANSWER / body_of ANSWER: the two parts of what kibana_call and es_call print.
@@ -353,8 +397,12 @@ logging_policies() {
 logging_up() {
   logging_operator || return 0
   logging_stack || return 0
-  logging_retention || return 0
   logging_kibana || true
-  logging_canary || true
+  if es_tunnel_open; then
+    if logging_retention; then
+      logging_canary || true
+    fi
+    es_tunnel_close
+  fi
   logging_policies || true
 }

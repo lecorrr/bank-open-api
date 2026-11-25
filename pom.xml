@@ -13,7 +13,7 @@
 
     <groupId>dev.tkachuk</groupId>
     <artifactId>bank-open-api</artifactId>
-    <version>0.7.0</version>
+    <version>0.7.1</version>
     <name>bank-open-api</name>
     <description>Open banking API of the bank for licensed providers, in front of bank-core</description>
 
