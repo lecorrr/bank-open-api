@@ -73,7 +73,8 @@ again, with the new scope `payments`; the summary says `Keycloak's database empt
 network policies, and the right for Jenkins' account to deploy the API's IngressRoute. From 0.6.1 it is the
 logging stack, Traefik's certificate issued again with Kibana's host, the Gateway taking Kibana's route from
 `logging`, and Keycloak restarted to write ECS JSON. From 0.7.0 nothing in the cluster changes: the run finishes
-what 0.7.0's stopped at, the lifecycle policy, the saved search, the canary and the logging stack's probe. It also
+what 0.7.0's stopped at, the lifecycle policy, the saved search, the canary and the logging stack's probe; 0.7.1's
+own run stopped earlier, at Helm's conflict with ECK, which 0.7.2 settles. It also
 puts this version's Traefik settings into the node, where k3s reads them again at every start.
 
 It uses these ports on 127.0.0.1 and stops if one is taken: 6550 (Kubernetes API), 8480 (HTTP, no routes since
@@ -340,6 +341,10 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
 - A provider's calls answer `429`: its rate limit (10 a second, bursts of 20) is used up; the answer's
   `Retry-After` says when to try again.
 
+- `Helm could not install the logging stack`: Helm's own words come just above the summary. `conflict with
+  "elastic-operator"` is ECK owning lists of its resources as server-side apply counts; versions before 0.7.2
+  upgraded without `--force-conflicts` and stopped there. Otherwise `helm --kube-context k3d-bank -n logging
+  history bank-logs` shows the failed revision and its reason.
 - `the logging stack is not ready`: most often memory, a pod `Pending` with `Insufficient memory` (`kubectl -n
   logging describe pod bank-logs-es-default-0`, Events at the end): stop what else takes memory, or give Docker
   more. On the first run the images may still be coming: `LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh`.

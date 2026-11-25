@@ -1,6 +1,6 @@
 # Architecture
 
-Version 0.7.1, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.7.2, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
 API's own host with the client certificate the token is bound to. It reads account data only under its own
 consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
@@ -559,6 +559,11 @@ to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no route
   pod, past the network policies, and opens no port. 0.7.0 went through Kibana's console proxy, which Kibana 9
   refuses to outside clients as an internal API; the header Kibana's own pages send would have let it through, but
   that leans on an API Kibana does not promise to keep.
+- **The chart owns what it sets.** Helm 4 applies server-side, and ECK rewrites its resources whole whenever it adds
+  its annotations; the defaults Go adds on the way make the operator the owner of whole lists the chart sets, such
+  as Elasticsearch's `nodeSets` or Logstash's containers. The first install goes through, every later upgrade stops
+  at the conflict. `cluster-up.sh` upgrades the logging stack with `--force-conflicts`: the operator only changed
+  how those lists are stored, not what they say, so Helm takes them back and nothing restarts.
 - **A canary to prove it.** The script's tests prove the masking; only a line that went the whole way proves
   Filebeat's glob, the json filter, the script mounted where the pipeline looks for it and the output's data
   stream. Its IBAN has the check digits 00, which no real IBAN has.

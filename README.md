@@ -5,7 +5,7 @@ payments, only with the customer's consent. It follows the Berlin Group NextGenP
 open banking specifications use, and sits in front of [bank-core](https://github.com/lecorrr/bank-core). Project 3
 of three, with bank-core and [bank-integration](https://github.com/lecorrr/bank-integration).
 
-**Status: 0.7.1, step 7 of 8: the logs.** The logs of the bank's namespace (bank-open-api, bank-core, Keycloak,
+**Status: 0.7.2, step 7 of 8: the logs.** The logs of the bank's namespace (bank-open-api, bank-core, Keycloak,
 PostgreSQL) go to Elasticsearch through Logstash, which masks personal data before anything is stored, and
 Kibana shows them at `https://kibana.localhost:8443`. The stack runs on ECK, Elastic's operator, and
 `cluster-up.sh` checks the whole way with a canary line that must arrive masked. The API, consents, payments and
@@ -131,7 +131,7 @@ docker compose up -d
 ./mvnw spring-boot:run
 ```
 
-The log shows the running version (`bank-open-api 0.7.1 started`), and the contract this version serves is at
+The log shows the running version (`bank-open-api 0.7.2 started`), and the contract this version serves is at
 `localhost:8090/openapi/bank-open-api.yaml`. Every call to the API needs a provider's token from Keycloak and the
 client certificate it is bound to, and the customer pages need Keycloak's login, which only the cluster has, so on
 this machine the API answers `401 TOKEN_UNKNOWN`; the integration tests cover both.

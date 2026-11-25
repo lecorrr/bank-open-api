@@ -174,7 +174,11 @@ logging_stack() {
   ensure_secret "$LOGGING_NAMESPACE" log-masking pseudonym-key=random
   ensure_secret "$LOGGING_NAMESPACE" log-reader username=log-reader password=random roles=viewer
   if [[ "$mode" == "fix" ]]; then
-    if ! h upgrade --install "$LOGGING_RELEASE" "$LOGGING_CHART" --namespace "$LOGGING_NAMESPACE" > /dev/null; then
+    # ECK rewrites its resources whole when it adds its annotations, and the defaults Go adds on the way make it the
+    # owner of lists the chart sets (Elasticsearch's nodeSets, Logstash's containers) as server-side apply counts.
+    # What the chart sets is the chart's: Helm takes those fields back instead of stopping at the conflict.
+    if ! h upgrade --install "$LOGGING_RELEASE" "$LOGGING_CHART" --namespace "$LOGGING_NAMESPACE" --force-conflicts \
+      > /dev/null; then
       fail "Helm could not install the logging stack: helm --kube-context ${CONTEXT} -n logging status bank-logs"
       return 1
     fi

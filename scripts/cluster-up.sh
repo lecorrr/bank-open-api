@@ -15,7 +15,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.7.1"
+readonly PROJECT_VERSION="0.7.2"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"

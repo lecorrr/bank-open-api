@@ -8,7 +8,7 @@
 openapi: 3.0.1
 info:
   title: bank-open-api
-  version: 0.7.1
+  version: 0.7.2
   description: |
     The bank's open banking API: the operations bank-open-api offers, taken from GD Next's
     "Openbanking Ukraine" 2.0 specification, which is based on the Berlin Group's NextGenPSD2.
