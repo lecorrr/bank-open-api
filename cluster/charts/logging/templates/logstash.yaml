@@ -60,9 +60,12 @@ spec:
               ecs_compatibility => disabled
             }
           }
-          # The output names the data stream; the data_stream fields of a line would clash with its own.
+          # The Beats input's codec keeps each line whole in [event][original] (ECS mode); its fields are the
+          # event's now, and a whole copy is not to be stored. The output names the data stream; the
+          # data_stream fields of a line would clash with its own.
           mutate {
-            remove_field => ["[data_stream.type]", "[data_stream.dataset]", "[data_stream.namespace]"]
+            remove_field => ["[event][original]", "[data_stream.type]", "[data_stream.dataset]",
+                             "[data_stream.namespace]"]
           }
           ruby {
             id => "masking"

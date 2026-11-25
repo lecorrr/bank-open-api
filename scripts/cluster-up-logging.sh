@@ -32,11 +32,28 @@ health() {
   printf '%s' "${value:-unknown}"
 }
 
+# Logstash's health lags a change to it: right after an upgrade that changes its pipeline or the masking script it
+# is still green from the pod about to be replaced, and the canary would race Logstash's restart. Logstash runs what
+# the chart says once ECK has seen the resource's last change, the StatefulSet ECK made for it has seen its own, and
+# every pod of the StatefulSet is of its latest revision; Logstash's health then says whether they are ready.
+logstash_current() {
+  local resource generation observed set_generation set_observed replicas updated
+  resource="$(k -n "$LOGGING_NAMESPACE" get logstash "$LOGGING_RELEASE" \
+    -o jsonpath='{.metadata.generation}|{.status.observedGeneration}' 2> /dev/null || true)"
+  IFS='|' read -r generation observed <<< "$resource"
+  [[ -n "$generation" && "$generation" == "$observed" ]] || return 1
+  resource="$(k -n "$LOGGING_NAMESPACE" get statefulset "${LOGGING_RELEASE}-ls" \
+    -o jsonpath='{.metadata.generation}|{.status.observedGeneration}|{.spec.replicas}|{.status.updatedReplicas}' \
+    2> /dev/null || true)"
+  IFS='|' read -r set_generation set_observed replicas updated <<< "$resource"
+  [[ -n "$set_generation" && "$set_generation" == "$set_observed" && -n "$replicas" && "$replicas" == "$updated" ]]
+}
+
 # shellcheck disable=SC2329  # called through wait_within
 logging_stack_ready() {
   [[ "$(health elasticsearch "$LOGGING_NAMESPACE")" =~ ^(green|yellow)$ ]] \
     && [[ "$(health kibana "$LOGGING_NAMESPACE")" == green ]] \
-    && [[ "$(health logstash "$LOGGING_NAMESPACE")" == green ]] \
+    && [[ "$(health logstash "$LOGGING_NAMESPACE")" == green ]] && logstash_current \
     && [[ "$(health beat "$COLLECTOR_NAMESPACE")" == green ]]
 }
 
@@ -45,11 +62,14 @@ logging_report() {
   local namespace
   note "Elasticsearch $(health elasticsearch "$LOGGING_NAMESPACE"), Kibana $(health kibana "$LOGGING_NAMESPACE"),"
   note "Logstash $(health logstash "$LOGGING_NAMESPACE"), Filebeat $(health beat "$COLLECTOR_NAMESPACE")"
+  logstash_current || note "Logstash does not run this version's pipeline and masking script yet"
   echo "   the stack's pods:"
   for namespace in "$LOGGING_NAMESPACE" "$COLLECTOR_NAMESPACE"; do
     k -n "$namespace" get pods --no-headers 2>&1 | sed 's/^/     /' || true
   done
   note "a pod that waits: kubectl --context ${CONTEXT} -n ${LOGGING_NAMESPACE} describe pod <name> (Events, at the end)"
+  note "Logstash's log, where a failed test of mask.rb shows:"
+  note "kubectl --context ${CONTEXT} -n ${LOGGING_NAMESPACE} logs ${LOGGING_RELEASE}-ls-0"
 }
 
 # kibana_call METHOD PATH [CURL ARGUMENTS...]: Kibana's API through the bank's Gateway, as the user elastic.
@@ -367,6 +387,8 @@ logging_canary() {
   done
   if grep -qF "$iban" <<< "$canary_answer" || grep -qF "$username" <<< "$canary_answer"; then
     fail "the canary line was stored with its IBAN or username unmasked"
+  elif grep -qF '"original":' <<< "$canary_answer"; then
+    fail "the canary line was stored with a copy of itself as it came (event.original): Logstash keeps it"
   elif ! grep -qF "$masked_iban" <<< "$canary_answer" \
     || ! grep -qF 'Key (iban)=(masked) already exists' <<< "$canary_answer" \
     || ! grep -qE '"user\.name":\["masked-[0-9a-f]{12}"\]' <<< "$canary_answer"; then

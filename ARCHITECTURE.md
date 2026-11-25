@@ -1,6 +1,6 @@
 # Architecture
 
-Version 0.7.2, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.7.3, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
 API's own host with the client certificate the token is bound to. It reads account data only under its own
 consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
@@ -349,7 +349,8 @@ a pod of the bank ── stdout ── containerd's file under /var/log/pods (a 
      pod's Kubernetes metadata
        └─ Logstash bank-logs (logging), beats input :5044 (network policy: from Filebeat only)
             ├─ json: an ECS line's fields to the event's root; PostgreSQL's plain lines stay as they are
-            ├─ mutate: a line's own data_stream fields dropped, the output names the data stream
+            ├─ mutate: the codec's copy of the line as it came (event.original) and a line's own data_stream
+            │  fields dropped; the output names the data stream
             ├─ ruby, mask.rb: personal data masked in every field; an event it cannot handle is dropped
             └─ elasticsearch output, ECK's user for Logstash, TLS with ECK's CA
                  └─ Elasticsearch bank-logs :9200: data stream logs-bank-default, ILM policy bank-logs
@@ -362,9 +363,10 @@ What `cluster/charts/logging/masking/mask.rb` masks:
 | What | Where it is found | What is stored |
 |---|---|---|
 | IBANs, electronic or printed in groups of four | any text | the country code and the last four kept: `UA***********************6001` |
-| who: usernames, user ids, emails, first, last and full names, a creditor's or debtor's name | a field whose name holds one (`user.name`, `user.id`, `creditor.name`, `payment.debtorName`); `key="value"` as in Keycloak's events and `"key":"value"` in text | `masked-` and 12 hex characters of HMAC-SHA256 with the key in the Secret `log-masking`: one value, one pseudonym |
+| who: usernames, user ids, emails, first, last and full names, a creditor's or debtor's name | a field whose name holds one (`user.name`, `user.id`, `creditor.name`, `payment.debtorName`); `key="value"` as in Keycloak's events and `"key":"value"` in text, dotted keys, keys after a prefix (`previous_email`, `customer.email`) and escaped quotes too; a value that is a whole JSON document, field by field, its keys as text | `masked-` and 12 hex characters of HMAC-SHA256 with the key in the Secret `log-masking`: one value, one pseudonym |
 | the values PostgreSQL quotes | `Key (...)=(...)` of a duplicate or missing key, `Failing row contains (...)` | `masked` |
-| passwords | `PASSWORD '...'` in SQL, `password=...` in text, a field named `password` | `masked` |
+| passwords | `PASSWORD '...'` in SQL, `password=...` in text (`DB_PASSWORD=...` too), a field named `password` | `masked` |
+| a JSON document too deep to read field by field (over 100 levels), or with a number JSON cannot write back | any field | `masked`, the whole value |
 
 What stays: IP addresses, the bank's own ids (customer numbers, consent, payment, request and trace ids) and the
 rest of each line. The script's tests sit at the end of the file; Logstash runs them each time it loads the
@@ -564,6 +566,19 @@ to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no route
   as Elasticsearch's `nodeSets` or Logstash's containers. The first install goes through, every later upgrade stops
   at the conflict. `cluster-up.sh` upgrades the logging stack with `--force-conflicts`: the operator only changed
   how those lists are stored, not what they say, so Helm takes them back and nothing restarts.
+- **No line stored as it came.** In ECS mode the Beats input's plain codec copies every line whole into
+  `event.original`, and that copy is JSON as text, with escaped quotes the patterns of 0.7.2 did not read: the
+  usernames in it went into Elasticsearch unmasked, which the canary found on its first real run. The pipeline drops
+  the copy before the masking (the json filter has its fields), and `mask.rb` masks a value that is a whole JSON
+  document field by field and reads escaped quotes and dotted keys in text, so a copy that came back would be
+  masked too; the canary fails on a stored copy either way. A document is written back as one line, so the text
+  patterns do not run over it again: the failing row's runs to the end of a line and would take the fields after
+  it. Its keys are masked as text instead, as a map keyed by IBAN needs.
+- **Ready means this version's Logstash.** Logstash's health lags an upgrade: right after Helm changes its pipeline
+  or `mask.rb` it is still green from the pod about to be replaced, and a canary sent then would race the restart,
+  read by the old pipeline or held past its wait. `cluster-up.sh` takes the stack as ready once ECK has seen the
+  Logstash resource's last change (`observedGeneration`), the StatefulSet ECK made for it has seen its own, and every
+  pod of it is of its latest revision; Logstash's health then says whether they are ready.
 - **A canary to prove it.** The script's tests prove the masking; only a line that went the whole way proves
   Filebeat's glob, the json filter, the script mounted where the pipeline looks for it and the output's data
   stream. Its IBAN has the check digits 00, which no real IBAN has.

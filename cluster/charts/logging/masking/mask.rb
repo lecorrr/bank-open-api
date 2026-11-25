@@ -5,8 +5,12 @@
 #     payment's creditor or debtor): a pseudonym, the same for the same value, so one user's events still line up;
 #   - the values PostgreSQL quotes in its error details (a duplicate key, a failing row) and passwords in SQL or in
 #     key=value text: removed.
+# A value that is a whole JSON document, such as a log line kept as it came, is masked field by field like the event,
+# its keys as text; other text by the patterns below, which also read JSON text, with its escaped quotes and dotted
+# keys.
 # IP addresses and the bank's own ids (customer number, consent and payment ids) stay: support follows a case by
 # them. Logstash runs the tests at the end of this file when it loads the pipeline and refuses to start if one fails.
+require "json"
 require "openssl"
 
 # An IBAN in its electronic form or printed in groups of four. Lowercase ids, such as trace ids, never match.
@@ -18,11 +22,18 @@ IDENTITY_FIELDS = %w[username userid email firstname lastname fullname creditorn
 SECRET_FIELDS = %w[password].freeze
 
 # The same in text: key="value" as Keycloak writes its events, "key":"value" of JSON in a message, and key=value.
-IDENTITY_KEY = "(?:previous_|updated_)?(?:user_?name|user_?id|e_?mail|first_?name|last_?name|full_?name)"
-QUOTED_IDENTITY = /\b(#{IDENTITY_KEY})(="|"\s*:\s*")([^"]*)/i
-BARE_IDENTITY = /\b(#{IDENTITY_KEY})(=)([^"\s,;&)]+)/i
-QUOTED_SECRET = /\b(password)(="|"\s*:\s*")([^"]*)/i
-BARE_SECRET = /\b(password)(=)([^"\s,;&)]+)/i
+# A key may follow a prefix (Keycloak's previous_email, customer.email, DB_PASSWORD), be dotted (user.name) and have
+# its quotes escaped (\"), as in JSON text inside a string.
+KEY_START = "(?<![A-Za-z0-9])"
+IDENTITY_KEY = "(?:user[._]?name|user[._]?id|e[._]?mail|first[._]?name|last[._]?name|full[._]?name|" \
+               "creditor[._]?name|debtor[._]?name|owner[._]?name|ultimate[._]?creditor|ultimate[._]?debtor)"
+QUOTE = '\\\\?"'
+# A quoted value runs to the next quote, escaped or not.
+QUOTED_VALUE = '(?:[^"\\\\]|\\\\(?!"))*'
+QUOTED_IDENTITY = /#{KEY_START}(#{IDENTITY_KEY})(=#{QUOTE}|#{QUOTE}\s*:\s*#{QUOTE})(#{QUOTED_VALUE})/i
+BARE_IDENTITY = /#{KEY_START}(#{IDENTITY_KEY})(=)(?!#{QUOTE})([^"\s,;&)]+)/i
+QUOTED_SECRET = /#{KEY_START}(password)(=#{QUOTE}|#{QUOTE}\s*:\s*#{QUOTE})(#{QUOTED_VALUE})/i
+BARE_SECRET = /#{KEY_START}(password)(=)(?!#{QUOTE})([^"\s,;&)]+)/i
 SQL_PASSWORD = /\b(PASSWORD\s+)'(?:[^']|'')*'/i
 
 # PostgreSQL quotes the values of a duplicate or missing key, Key (iban)=(UA...) already exists, and the whole row
@@ -33,6 +44,7 @@ FAILING_ROW = /(\bFailing row contains \().*(\))/
 
 MASKED = "masked"
 PSEUDONYM = /\Amasked-[0-9a-f]{12}\z/
+JSON_DOCUMENT = /\A\s*[\[{]/
 
 def register(params)
   @key = params["pseudonym_key"].to_s
@@ -68,14 +80,41 @@ def mask_value(value, name)
   elsif SECRET_FIELDS.any? { |field| name.include?(field) }
     MASKED
   elsif value.is_a?(String)
-    mask_text(value)
+    # Bytes that are not UTF-8 become "?": the patterns cannot read text that holds them.
+    text = value.scrub("?")
+    mask_json(text, name) || mask_text(text)
   else
     value
   end
 end
 
+# A text that is a whole JSON object or array is masked as one: parsed, masked field by field, its keys as text, and
+# written back if anything changed, so a nested {"user": {"name": ...}} is found as a field would be. The text
+# patterns, which every string in it has been through, do not run over the document as a whole: a pattern that runs
+# to the end of a line, as a failing row's does, would take the fields after it. nil for text that is not JSON.
+def mask_json(text, name)
+  return nil unless text.match?(JSON_DOCUMENT)
+
+  document = JSON.parse(text)
+  masked = mask_keys(mask(document, name))
+  masked == document ? text : JSON.generate(masked)
+rescue JSON::NestingError, JSON::GeneratorError
+  # Nested too deep to read field by field, or a number JSON cannot write back (1e400): the value is not stored.
+  MASKED
+rescue JSON::ParserError
+  nil
+end
+
+# The keys of a JSON document are text too: a service may key a map by IBAN.
+def mask_keys(value)
+  case value
+  when Hash then value.to_h { |key, child| [mask_text(key.to_s), mask_keys(child)] }
+  when Array then value.map { |item| mask_keys(item) }
+  else value
+  end
+end
+
 def mask_text(text)
-  text = text.scrub("?")
   text = text.gsub(DATABASE_KEY) { "#{$1}#{MASKED}#{$2}" }
   text = text.gsub(FAILING_ROW) { "#{$1}#{MASKED}#{$2}" }
   text = text.gsub(SQL_PASSWORD) { "#{$1}'#{MASKED}'" }
@@ -182,19 +221,22 @@ test "Keycloak's event: the user becomes a pseudonym, the rest stays" do
   end
 end
 
-test "pairs without quotes, and Keycloak's updated_ and previous_ ones" do
+test "pairs without quotes, and keys after a prefix, as Keycloak's updated_ and previous_ ones" do
   parameters { { "pseudonym_key" => "test-key-0123456789abcdef0123456789" } }
   in_event do
     [{ "message" => 'type="UPDATE_EMAIL", previous_email="artem@example.com", updated_email="tkachuk@example.com"' },
-     { "message" => "sign-in failed for username=artem.demo, email=artem@example.com; first_name=Artem" }]
+     { "message" => "sign-in failed for username=artem.demo, email=artem@example.com; first_name=Artem" },
+     { "message" => 'export customer_email="olena@example.com" DB_PASSWORD=s3cret' }]
   end
   expect("none left") do |events|
     text = events.map { |e| e.get("message") }.join(" ")
-    %w[artem@example.com tkachuk@example.com artem.demo Artem].none? { |value| text.include?(value) }
+    %w[artem@example.com tkachuk@example.com artem.demo Artem olena@example.com s3cret]
+      .none? { |value| text.include?(value) }
   end
   expect("each a pseudonym in its place") do |events|
     events[0].get("message") =~ /previous_email="masked-[0-9a-f]{12}", updated_email="masked-[0-9a-f]{12}"\z/ &&
-      events[1].get("message") =~ /\Asign-in failed for username=masked-[0-9a-f]{12}, email=masked-[0-9a-f]{12}; /
+      events[1].get("message") =~ /\Asign-in failed for username=masked-[0-9a-f]{12}, email=masked-[0-9a-f]{12}; / &&
+      events[2].get("message") =~ /\Aexport customer_email="masked-[0-9a-f]{12}" DB_PASSWORD=masked\z/
   end
 end
 
@@ -271,6 +313,73 @@ test "passwords in SQL and in text are removed" do
     events[0].get("message") == "STATEMENT:  ALTER ROLE bank WITH LOGIN PASSWORD 'masked';" &&
       events[1].get("message") == "url jdbc:postgresql://postgres/bank?user=bank&password=masked&ssl=true" &&
       events[2].get("message") == 'body {"password":"masked"}' && events[2].get("[db.password]") == "masked"
+  end
+end
+
+test "a line kept whole as JSON is masked as the event would be" do
+  parameters { { "pseudonym_key" => "test-key-0123456789abcdef0123456789" } }
+  in_event do
+    line = '{"log.level":"WARN","user.name":"artem.demo","user":{"name":"olena.k","email":"olena@example.com"},' \
+           '"message":"transfer from UA213223130000026007233566001 refused for username=\"artem.demo\"; Detail: ' \
+           'Key (iban)=(UA213223130000026007233566001) already exists.","payment":{"creditorName":"Olena Kovalenko"},' \
+           '"db":{"password":"s3cret"},"UA573999990000000000000000002":1,' \
+           '"error.message":"Detail: Failing row contains (5c1d, Olena (Lena) K).",' \
+           '"error.stack_trace":"boom\\n\\tat a.B.c(B.java:10)"}'
+    [{ "event" => { "original" => line } }, { "message" => '[{"user":{"name":"olena.k"}}, 7]' }]
+  end
+  expect("nothing personal left") do |events|
+    text = events.map { |e| e.get("[event][original]") || e.get("message") }.join(" ")
+    %w[artem.demo olena.k olena@example.com Olena Lena s3cret 3223130000026007233566 3999990000000000000000]
+      .none? { |value| text.include?(value) }
+  end
+  expect("still JSON, with pseudonyms in their places") do |events|
+    line = JSON.parse(events.first.get("[event][original]"))
+    [line["user.name"], line["user"]["name"], line["user"]["email"], line["payment"]["creditorName"]]
+      .all? { |value| value =~ /\Amasked-[0-9a-f]{12}\z/ } && line["db"]["password"] == "masked" &&
+      line["message"] =~ /username="masked-[0-9a-f]{12}"; Detail: Key \(iban\)=\(masked\) already exists\.\z/ &&
+      line.key?("UA***********************0002")
+  end
+  expect("the fields after a failing row kept") do |events|
+    line = JSON.parse(events.first.get("[event][original]"))
+    line["error.message"] == "Detail: Failing row contains (masked)." &&
+      line["error.stack_trace"] == "boom\n\tat a.B.c(B.java:10)"
+  end
+  expect("an array is a document too") do |events|
+    events[1].get("message") =~ /\A\[\{"user":\{"name":"masked-[0-9a-f]{12}"\}\},7\]\z/
+  end
+end
+
+test "JSON with nothing to mask stays as it was written" do
+  parameters { { "pseudonym_key" => "test-key-0123456789abcdef0123456789" } }
+  in_event do
+    { "message" => '{ "service.name": "bank-core", "status": 200 }', "tags" => "[not json",
+      "error" => { "message" => '{"detail":"Failing row contains (masked).","trace":"at a.B.c(B.java:10)"}' } }
+  end
+  expect("unchanged") do |events|
+    event = events.first
+    event.get("message") == '{ "service.name": "bank-core", "status": 200 }' && event.get("tags") == "[not json" &&
+      event.get("[error][message]") == '{"detail":"Failing row contains (masked).","trace":"at a.B.c(B.java:10)"}'
+  end
+end
+
+test "JSON text inside text: escaped quotes and dotted keys" do
+  parameters { { "pseudonym_key" => "test-key-0123456789abcdef0123456789" } }
+  in_event do
+    [{ "message" => 'body={\"user.name\":\"artem.demo\",\"creditor_name\":\"Olena\",\"password\":\"s3cret\"} sent' },
+     { "message" => 'refused for "user.name": "olena.k", "debtorName":"Artem Tkachuk"' },
+     { "message" => 'retry username=\"artem.demo\" later' }, { "message" => "{not json} retry user_name=olena.k" }]
+  end
+  expect("none left") do |events|
+    text = events.map { |e| e.get("message") }.join(" ")
+    %w[artem.demo Olena s3cret olena.k Tkachuk].none? { |value| text.include?(value) }
+  end
+  expect("the escaping kept, each a pseudonym in its place") do |events|
+    pseudonym = "masked-[0-9a-f]{12}"
+    events[0].get("message") =~ /\Abody=\{\\"user\.name\\":\\"#{pseudonym}\\",\\"creditor_name\\":\\"#{pseudonym}/ &&
+      events[0].get("message").end_with?('\"password\":\"masked\"} sent') &&
+      events[1].get("message") =~ /\Arefused for "user\.name": "#{pseudonym}", "debtorName":"#{pseudonym}"\z/ &&
+      events[2].get("message") =~ /\Aretry username=\\"#{pseudonym}\\" later\z/ &&
+      events[3].get("message") =~ /\A\{not json\} retry user_name=#{pseudonym}\z/
   end
 end
 

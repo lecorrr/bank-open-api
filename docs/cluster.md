@@ -74,8 +74,10 @@ network policies, and the right for Jenkins' account to deploy the API's Ingress
 logging stack, Traefik's certificate issued again with Kibana's host, the Gateway taking Kibana's route from
 `logging`, and Keycloak restarted to write ECS JSON. From 0.7.0 nothing in the cluster changes: the run finishes
 what 0.7.0's stopped at, the lifecycle policy, the saved search, the canary and the logging stack's probe; 0.7.1's
-own run stopped earlier, at Helm's conflict with ECK, which 0.7.2 settles. It also
-puts this version's Traefik settings into the node, where k3s reads them again at every start.
+own run stopped earlier, at Helm's conflict with ECK, which 0.7.2 settles. From 0.7.2 it is Logstash restarted
+with the pipeline that drops each line's copy as it came and with the new `mask.rb`; the logs stored before it hold
+those copies, usernames unmasked in them, so delete them once after this run (section 5). It also puts this
+version's Traefik settings into the node, where k3s reads them again at every start.
 
 It uses these ports on 127.0.0.1 and stops if one is taken: 6550 (Kubernetes API), 8480 (HTTP, no routes since
 0.3.0), 8443 (HTTPS) and 5050 (image registry).
@@ -253,6 +255,15 @@ The user `elastic` may change everything (the lifecycle policy, the data views);
 kubectl -n logging get secret bank-logs-es-elastic-user -o jsonpath='{.data.elastic}' | base64 -d; echo
 ```
 
+Logs stored before 0.7.3 keep each line's copy as it came, usernames unmasked in it. To delete them once
+`cluster-up.sh` 0.7.3 has run, sign in to Kibana as `elastic`, open Dev Tools (menu, Management) and run the line
+below; new lines start the data stream again, with the lifecycle policy and the template as `cluster-up.sh` set
+them.
+
+```
+DELETE _data_stream/logs-bank-default
+```
+
 The stack's health, as ECK sees it:
 
 ```
@@ -348,12 +359,18 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
 - `the logging stack is not ready`: most often memory, a pod `Pending` with `Insufficient memory` (`kubectl -n
   logging describe pod bank-logs-es-default-0`, Events at the end): stop what else takes memory, or give Docker
   more. On the first run the images may still be coming: `LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh`.
+  With `Logstash does not run this version's pipeline and masking script yet` under it, ECK has not replaced
+  Logstash's pod after the upgrade (`kubectl -n logging get logstash,statefulset`); with Logstash red, its new pod
+  does not start, and its log says why.
 - Logstash restarts and its log says the masking script had failing tests (`kubectl -n logging logs
   bank-logs-ls-0`): its own tests failed, and Logstash refuses to run a masking it cannot trust. The ConfigMap
   `bank-logs-masking` holds another script than this version's `mask.rb`; run `bash scripts/cluster-up.sh`.
 - `the canary line did not reach Elasticsearch`: follow it. `kubectl -n bank logs log-canary-...` (the pod stays
   for this) shows the line, `kubectl -n log-collector logs daemonset/bank-logs-beat-filebeat` whether Filebeat read
   the file, `kubectl -n logging logs bank-logs-ls-0` whether Logstash sent it on.
+- `the canary line was stored with a copy of itself as it came (event.original)`: Logstash runs a pipeline that
+  keeps the codec's copy of each line; `kubectl -n logging get logstash bank-logs -o yaml` shows what it runs, and
+  `bash scripts/cluster-up.sh` puts this version's pipeline back.
 - `the canary line was stored with its IBAN or username unmasked`: the pipeline runs without the masking, and
   until it is back the logs Elasticsearch takes in are not masked. `kubectl -n logging get logstash bank-logs -o
   yaml` shows what Logstash runs; `bash scripts/cluster-up.sh` puts this version's pipeline back.

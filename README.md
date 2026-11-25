@@ -5,7 +5,7 @@ payments, only with the customer's consent. It follows the Berlin Group NextGenP
 open banking specifications use, and sits in front of [bank-core](https://github.com/lecorrr/bank-core). Project 3
 of three, with bank-core and [bank-integration](https://github.com/lecorrr/bank-integration).
 
-**Status: 0.7.2, step 7 of 8: the logs.** The logs of the bank's namespace (bank-open-api, bank-core, Keycloak,
+**Status: 0.7.3, step 7 of 8: the logs.** The logs of the bank's namespace (bank-open-api, bank-core, Keycloak,
 PostgreSQL) go to Elasticsearch through Logstash, which masks personal data before anything is stored, and
 Kibana shows them at `https://kibana.localhost:8443`. The stack runs on ECK, Elastic's operator, and
 `cluster-up.sh` checks the whole way with a canary line that must arrive masked. The API, consents, payments and
@@ -15,8 +15,11 @@ the edge work as in 0.6.1.
   every field of every line. IBANs keep their country code and last four characters; usernames, Keycloak's user
   ids, emails and people's names become pseudonyms (`masked-` and 12 characters of an HMAC with a key from a
   Secret), so one user's events still line up; the values PostgreSQL quotes in its error details and passwords in
-  SQL are removed. A line the masking cannot handle is dropped, never stored as it came. The script's own tests
-  run each time Logstash loads it, and Logstash does not start if one fails.
+  SQL are removed. A value that is a whole JSON document is masked field by field, keys included (one too deep to
+  read is removed); text is read with escaped quotes, dotted keys and keys after a prefix (`customer_email`,
+  `DB_PASSWORD`). Logstash keeps no copy of a line as it came (`event.original`), and a line the masking cannot
+  handle is dropped. The script's own tests run each time Logstash loads it, and Logstash does not start if one
+  fails.
 - **ECK on k3d**: Elasticsearch, Kibana, Logstash and Filebeat 9.5.7, run by ECK 3.5. Filebeat reads the
   containers' log files on the node, so the services send nothing over the network; it alone runs as root, in a
   namespace of its own, and the rest meet the "restricted" Pod Security Standard.
@@ -131,7 +134,7 @@ docker compose up -d
 ./mvnw spring-boot:run
 ```
 
-The log shows the running version (`bank-open-api 0.7.2 started`), and the contract this version serves is at
+The log shows the running version (`bank-open-api 0.7.3 started`), and the contract this version serves is at
 `localhost:8090/openapi/bank-open-api.yaml`. Every call to the API needs a provider's token from Keycloak and the
 client certificate it is bound to, and the customer pages need Keycloak's login, which only the cluster has, so on
 this machine the API answers `401 TOKEN_UNKNOWN`; the integration tests cover both.
