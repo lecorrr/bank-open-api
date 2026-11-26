@@ -12,11 +12,14 @@ extensions:
 receivers:
   otlp:
     protocols:
+      # Every address of the pod: the services reach its own through the Service, and cluster-up.sh's canary span
+      # comes through a port-forward, which kubectl carries to the pod's loopback. The network policy in
+      # templates/network-policies.yaml decides who else may connect.
       # Keycloak sends over gRPC, its default; the other services send over HTTP.
       grpc:
-        endpoint: ${env:POD_IP}:4317
+        endpoint: 0.0.0.0:4317
       http:
-        endpoint: ${env:POD_IP}:4318
+        endpoint: 0.0.0.0:4318
 
 processors:
   # First in the pipeline: a collector short of memory refuses spans, and the senders retry, instead of the collector

@@ -19,6 +19,8 @@ readonly LOGGING_RELEASE="bank-logs"
 # The traces' part of the stack, named in the chart: ECK's APM Server and the OpenTelemetry Collector before it.
 readonly APM_SERVER="bank-traces"
 readonly TRACE_COLLECTOR="trace-collector"
+# The collector's pods, as its Deployment selects them.
+readonly TRACE_COLLECTOR_PODS="app.kubernetes.io/name=${TRACE_COLLECTOR},app.kubernetes.io/instance=${LOGGING_RELEASE}"
 readonly LOGGING_CHART="cluster/charts/logging"
 readonly KIBANA_HOST="kibana.localhost"
 readonly KIBANA_URL="https://${KIBANA_HOST}:8443"
@@ -39,16 +41,22 @@ health() {
   printf '%s' "${value:-unknown}"
 }
 
-# The trace collector runs this version's configuration once its Deployment's last change is rolled out and every
-# replica of it is ready: its readiness probe asks the collector's health check.
+# The trace collector runs this version's configuration once its Deployment's last change is rolled out, every
+# replica of it is ready (its readiness probe asks the collector's health check) and no pod of an earlier revision is
+# left. The Deployment's counts can match while the old pod still serves: it counts as available until the new one
+# is, and not at all once it is shutting down. A port-forward to the Service takes the pod ready the longest, the old.
 collector_current() {
-  local fields resource generation observed replicas updated available
+  local fields resource generation observed replicas updated available pods
   fields='{.metadata.generation}|{.status.observedGeneration}|{.spec.replicas}'
   fields+='|{.status.updatedReplicas}|{.status.availableReplicas}'
   resource="$(k -n "$LOGGING_NAMESPACE" get deployment "$TRACE_COLLECTOR" -o jsonpath="$fields" 2> /dev/null || true)"
   IFS='|' read -r generation observed replicas updated available <<< "$resource"
   [[ -n "$generation" && "$generation" == "$observed" && -n "$replicas" && "$replicas" == "$updated" \
-    && "$replicas" == "$available" ]]
+    && "$replicas" == "$available" ]] || return 1
+  # Every pod that runs or is about to, one shutting down too; not one that ended long ago, evicted, say.
+  pods="$(k -n "$LOGGING_NAMESPACE" get pods -l "$TRACE_COLLECTOR_PODS" \
+    --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name 2> /dev/null | grep -c . || true)"
+  [[ "$pods" == "$replicas" ]]
 }
 
 # Logstash's health lags a change to it: right after an upgrade that changes its pipeline or the masking script it
@@ -114,11 +122,17 @@ kibana_call() {
 readonly ES_SERVICE="${LOGGING_RELEASE}-es-http"
 declare -A tunnel_pid=() tunnel_port=()
 
+# tunnel_log NAME: the file kubectl's port-forward NAME writes to, there after it ends.
+tunnel_log() {
+  printf '%s/%s-port-forward.log' "${work:?}" "$1"
+}
+
 # tunnel_open NAME SERVICE PORT WHAT: a port-forward to the service's port in the logging namespace, on a free local
 # port kubectl picks, which goes into tunnel_port[NAME]. Says why, naming WHAT, and returns 1 when kubectl names no
 # local port.
 tunnel_open() {
-  local name=$1 service=$2 port=$3 what=$4 log="${work:?}/${1}-port-forward.log" tries
+  local name=$1 service=$2 port=$3 what=$4 log tries
+  log="$(tunnel_log "$name")"
   # kubectl itself rather than k, so that the PID is kubectl's and closing the port-forward ends it.
   kubectl --context "$CONTEXT" -n "$LOGGING_NAMESPACE" port-forward "svc/${service}" ":${port}" > "$log" 2>&1 &
   tunnel_pid[$name]=$!
@@ -528,7 +542,7 @@ SPAN
 # error of its exception; both must arrive with the IBAN masked and the rest gone. Kibana's APM app then lists the
 # service trace-canary, as Discover lists the log canary's line.
 logging_trace_canary() {
-  local answer leaked value
+  local answer leaked value said
   step "a canary span through the traces"
   if [[ "$mode" == "check" ]]; then
     note "the canary span runs without --check"
@@ -544,6 +558,12 @@ logging_trace_canary() {
   tunnel_close collector
   if [[ "$answer" != 200 ]]; then
     fail "the trace collector did not take the canary span (HTTP ${answer:-none})"
+    # No answer at all: kubectl says why it could not carry the connection, say nothing listening on the pod's
+    # loopback, where a port-forward arrives.
+    said="$(grep -m 1 -i 'error' "$(tunnel_log collector)" || true)"
+    # The cause comes last in kubectl's line, which runs long.
+    if ((${#said} > 300)); then said="...${said: -300}"; fi
+    if [[ -n "$said" ]]; then note "kubectl port-forward said: ${said}"; fi
     note "kubectl --context ${CONTEXT} -n ${LOGGING_NAMESPACE} logs deployment/${TRACE_COLLECTOR}"
     return 1
   fi

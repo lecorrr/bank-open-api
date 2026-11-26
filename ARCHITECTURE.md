@@ -1,6 +1,6 @@
 # Architecture
 
-Version 0.8.0, step 8 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.8.1, step 8 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
 API's own host with the client certificate the token is bound to. It reads account data only under its own
 consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
@@ -377,7 +377,7 @@ page, and `/payments/done` shows the status the bank reports (`ACCC` within the 
   session, `BankErrors` for the bank's refusals (502, with the code) and silences (503), `SecurityConfig` (CSRF
   tokens on every form, no sign-in, as the provider app keeps no users of its own) and `TracingConfig`, the same
   span names as the bank's. The top package has `ProviderProperties` and `StartupLogger`, which logs the version
-  at start (`provider-app 0.8.0 started`).
+  at start (`provider-app 0.8.1 started`).
 - **The bank's names, Traefik's address**: in a pod, `localhost` is the pod itself and `api.localhost` leads
   nowhere. `BankEdgeResolver` answers HttpClient's lookup of the bank's two names with the addresses of Traefik's
   Service in `kube-system`, port 443, as curl's `--connect-to` does; TLS still names the bank's host (SNI) and checks
@@ -707,6 +707,15 @@ entry point, has no routes.
 - **The collector in `logging`.** A pod mounts Secrets of its own namespace only, and ECK keeps APM Server's token
   in `logging`. The senders are named in the collector's network policy by namespace and pod label
   (`traceCollector.senders`), Traefik by its own.
+- **The collector listens on every address of its pod.** The services reach the pod's own address through the
+  Service; `cluster-up.sh`'s canary span comes through a port-forward, which kubectl carries to the pod's
+  loopback. Listening on the pod's address alone, as 0.8.0 did, refused every port-forward. Who may connect is the
+  network policy's to say, not the address's; the health check, which only the kubelet asks, stays on the pod's
+  address.
+- **The collector is ready once its old pod is gone.** In a rollout the Deployment's counts match while the old pod
+  still runs: it counts as available until the new pod is, and not at all once it shuts down. A port-forward to the
+  Service takes the pod ready the longest, the old one, so `cluster-up.sh` also counts the collector's pods (any
+  that has not ended) before the canary span, as Jenkins' deploy stages wait for only the new image's pods.
 - **Traces 7 days, as logs.** APM's data streams come with Elasticsearch's built-in templates, which keep traces and
   errors 10 days. `traces@custom` names the ILM policy `bank-traces` and `logs@custom` already names `bank-logs` (one
   file for both: an index a day, deleted 7 days after it rolls over); ILM wins over the templates' data stream

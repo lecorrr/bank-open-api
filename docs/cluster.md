@@ -91,7 +91,8 @@ namespace `provider` with its policies and the provider app's certificate, Traef
 the provider app's host, the Gateway taking the provider app's route, the realm with the client `provider-app`
 (Keycloak's database emptied, the realm imported afresh), Traefik and Keycloak restarted to send their spans,
 Jenkins' right to deploy in `provider`, and in `logging` APM Server, the trace collector, the traces' lifecycle and
-the failure stores' 7 days.
+the failure stores' 7 days. From 0.8.0 it is the trace collector restarted with its receivers on every address of
+its pod; once the old pod is gone, the canary span gets through.
 
 It uses these ports on 127.0.0.1 and stops if one is taken: 6550 (Kubernetes API), 8480 (HTTP, no routes since
 0.3.0), 8443 (HTTPS) and 5050 (image registry).
@@ -312,7 +313,7 @@ where you sign in as `artem.demo` (the password as in section 4) and approve. Th
 provider app shows the account's balances under the consent; **Pay at the bank** starts a payment of 1.00 UAH to
 another customer's account, which you approve on the bank's page the same way, and the provider app shows its
 status. **End the provider's access** deletes the consent at the bank. The provider app's own log, where
-`provider-app 0.8.0 started` names the version that runs:
+`provider-app 0.8.1 started` names the version that runs:
 
 ```
 kubectl -n provider logs deploy/provider-app
@@ -447,7 +448,9 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
   more. On the first run the images may still be coming: `LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh`.
   With `Logstash does not run this version's pipeline and masking script yet` under it, ECK has not replaced
   Logstash's pod after the upgrade (`kubectl -n logging get logstash,statefulset`); with Logstash red, its new pod
-  does not start, and its log says why.
+  does not start, and its log says why. With `the trace collector does not run this version's configuration, or is
+  not ready, yet`, the collector's new pod is not ready or its old one still runs (`kubectl -n logging get pods`):
+  a port-forward would take the old pod, so the canary span waits until only the new one is left.
 - Logstash restarts and its log says the masking script had failing tests (`kubectl -n logging logs
   bank-logs-ls-0`): its own tests failed, and Logstash refuses to run a masking it cannot trust. The ConfigMap
   `bank-logs-masking` holds another script than this version's `mask.rb`; run `bash scripts/cluster-up.sh`.
@@ -518,7 +521,10 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
   `ProviderController`; nothing should change on such a return.
 - `the trace collector did not take the canary span`: the collector is not running or refused the span; its log
   says which (`kubectl -n logging logs deploy/trace-collector`). A `memory_limiter` message means it is short of
-  memory: give `traceCollector.resources` in the logging chart's values more.
+  memory: give `traceCollector.resources` in the logging chart's values more. `HTTP 000` is no answer at all, and
+  the `kubectl port-forward said:` line under it gives kubectl's reason. `failed to connect to localhost:4318
+  inside namespace` (the pod's loopback, where a port-forward arrives) means the collector listens on its pod's
+  own address only, as 0.8.0's did. Run `bash scripts/cluster-up.sh` of 0.8.1 or later.
 - `the canary span did not arrive as a transaction and an error`: follow it. The collector's log shows whether it
   sent the span on, APM Server's (`kubectl -n logging logs deploy/bank-traces-apm-server`) whether it took it and
   what Elasticsearch answered.

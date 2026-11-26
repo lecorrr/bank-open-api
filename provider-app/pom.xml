@@ -15,7 +15,7 @@
 
     <groupId>dev.tkachuk</groupId>
     <artifactId>provider-app</artifactId>
-    <version>0.8.0</version>
+    <version>0.8.1</version>
     <name>provider-app</name>
     <description>A provider's site that reads accounts and starts payments through bank-open-api</description>
 

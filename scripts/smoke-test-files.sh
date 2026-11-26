@@ -7,7 +7,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="smoke-test-files.sh"
-readonly PROJECT_VERSION="0.8.0"
+readonly PROJECT_VERSION="0.8.1"
 if (($# != 1)) || [[ ! -d "$1" ]]; then
   echo "usage: ${SCRIPT_NAME} DIR, an existing folder" >&2
   exit 2

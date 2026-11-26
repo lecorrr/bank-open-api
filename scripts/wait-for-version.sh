@@ -7,7 +7,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="wait-for-version.sh"
-readonly PROJECT_VERSION="0.8.0"
+readonly PROJECT_VERSION="0.8.1"
 if (($# != 3)); then
   echo "usage: ${SCRIPT_NAME} NAMESPACE RELEASE TAG" >&2
   exit 2

@@ -5,13 +5,15 @@ payments, only with the customer's consent. It follows the Berlin Group NextGenP
 open banking specifications use, and sits in front of [bank-core](https://github.com/lecorrr/bank-core). Project 3
 of three, with bank-core and [bank-integration](https://github.com/lecorrr/bank-integration).
 
-**Status: 0.8.0, all eight steps done.** A provider's site of its own, the provider app (`provider-app/`), takes
+**Status: 0.8.1, all eight steps done.** A provider's site of its own, the provider app (`provider-app/`), takes
 a customer through the whole flow at `https://provider.localhost:8443`: it signs in at Keycloak with its own key
 and certificate, asks the bank for a consent, sends the customer to the bank's page and shows the balances once
 they approve, then starts a payment the same way. Every service on the way (the provider app, Traefik, Keycloak,
 bank-open-api, bank-core) sends its spans to one OpenTelemetry Collector, which keeps only the attributes on its
 allow-list and masks IBANs, and Kibana's APM app shows each trace across them with its logs. The API, consents,
-payments, the edge and the logs work as in 0.7.3.
+payments, the edge and the logs work as in 0.7.3. In 0.8.1 the trace collector listens on every address of its
+pod, so the canary span `cluster-up.sh` sends through a port-forward reaches it, and `cluster-up.sh` waits for the
+collector's old pod to go first.
 
 - **A provider outside the bank**: the provider app runs in a namespace of its own (`provider`) and reaches the
   bank only through Traefik, as any provider's server would. It signs in with `private_key_jwt` (PS256) over mutual
@@ -164,7 +166,7 @@ docker compose up -d
 ./mvnw spring-boot:run
 ```
 
-The log shows the running version (`bank-open-api 0.8.0 started`), and the contract this version serves is at
+The log shows the running version (`bank-open-api 0.8.1 started`), and the contract this version serves is at
 `localhost:8090/openapi/bank-open-api.yaml`. Every call to the API needs a provider's token from Keycloak and the
 client certificate it is bound to, and the customer pages need Keycloak's login, which only the cluster has, so on
 this machine the API answers `401 TOKEN_UNKNOWN`; the integration tests cover both.

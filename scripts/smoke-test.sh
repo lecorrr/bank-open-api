@@ -28,7 +28,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="smoke-test.sh"
-readonly PROJECT_VERSION="0.8.0"
+readonly PROJECT_VERSION="0.8.1"
 token_only=0
 provider_app_only=0
 if [[ "${1:-}" == "--token" ]]; then
