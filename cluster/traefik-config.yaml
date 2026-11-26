@@ -17,3 +17,13 @@ spec:
     additionalArguments:
       - --entryPoints.web.http.aliasHeadersStrategy=delete
       - --entryPoints.websecure.http.aliasHeadersStrategy=delete
+    # Every request's span goes to the trace collector (cluster/charts/logging), the start of each trace through the
+    # bank. Traefik masks the values of query parameters in its spans (REDACTED) and records no headers; the
+    # collector drops the query and the caller's address on top of that. A traceparent a caller sends continues its
+    # trace, as W3C Trace Context has it.
+    tracing:
+      otlp:
+        enabled: true
+        http:
+          enabled: true
+          endpoint: http://trace-collector.logging.svc.cluster.local:4318/v1/traces

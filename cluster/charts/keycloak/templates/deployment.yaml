@@ -91,6 +91,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.smokeTestProviderSecret }}
                   key: certificate-base64
+            # ${PROVIDER_APP_CERTIFICATE}: the provider app's certificate, the key that signs its JWTs.
+            - name: PROVIDER_APP_CERTIFICATE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.providerAppSecret }}
+                  key: certificate-base64
             # ${APPROVAL_CLIENT_SECRET}: the secret of bank-open-api's client for the customer pages.
             - name: APPROVAL_CLIENT_SECRET
               valueFrom:
@@ -103,6 +109,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.testCustomerSecret }}
                   key: password
+            # A span for each request and its database calls, to the trace collector. Tracing is a build option,
+            # which the build at start takes in. Keycloak samples on its own ratio, 1.0, whatever a caller's
+            # traceparent asks. Its embedded cache's spans stay off: there are many, and they say little here.
+            - name: KC_TRACING_ENABLED
+              value: "true"
+            - name: KC_TRACING_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: KC_TRACING_INFINISPAN_ENABLED
+              value: "false"
             # Half of the memory limit for the heap; the rest is metaspace, threads and the build at start.
             - name: JAVA_OPTS_KC_HEAP
               value: "-XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25"

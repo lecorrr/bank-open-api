@@ -73,8 +73,17 @@ management:
         enabled: true   # /actuator/health/liveness and /readiness for Kubernetes, also when run outside it
   tracing:
     sampling:
-      # Keep every trace. Nothing is exported yet; logs carry the trace ids either way.
+      # Keep every trace. In the cluster the spans go to the trace collector (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+      # set in the Helm chart); elsewhere nothing is exported. The logs carry the trace ids either way.
       probability: 1.0
+    # W3C trace context alone: a provider's traceparent continues, a baggage header it sends goes no further.
+    baggage:
+      enabled: false
+  observations:
+    enable:
+      # Spring Security's own spans, several for each request (one for each part of the filter chain), would bury
+      # the request's own.
+      spring.security: false
 
 logging:
   level:

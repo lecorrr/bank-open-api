@@ -186,6 +186,34 @@
       }
     },
     {
+      "clientId": "provider-app",
+      "name": "Provider app",
+      "description": "The provider's site in provider-app/: it signs in with its own key and certificate",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "consentRequired": true,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": [
+        "basic",
+        "accounts",
+        "payments"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "token.endpoint.auth.signing.alg": "PS256",
+        "jwt.credential.certificate": "${PROVIDER_APP_CERTIFICATE}",
+        "tls.client.certificate.bound.access.tokens": "true",
+        "access.token.header.type.rfc9068": "true",
+        "access.token.signed.response.alg": "PS256"
+      }
+    },
+    {
       "clientId": "bank-approval",
       "name": "Bank approval pages",
       "description": "bank-open-api's pages where customers decide on consents and payments",

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: provider-app
+description: A provider's site for the demo, in the k3d cluster beside the bank, reaching it only through Traefik
+type: application
+version: 0.8.0
+appVersion: "0.8.0"

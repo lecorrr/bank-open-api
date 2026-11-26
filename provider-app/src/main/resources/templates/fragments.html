@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!-- What every page of the provider shares: the head, with the page's title, and the header. -->
+<head th:fragment="head(title)">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title th:text="${title} + ' - Provider app'">Provider app</title>
+    <link rel="stylesheet" th:href="@{/provider.css}">
+</head>
+<body>
+<header th:fragment="header">
+    <a class="brand" th:href="@{/}">Provider app</a>
+    <span>A provider's site: it reads your account and pays from it, with your consent at your bank.</span>
+</header>
+</body>
+</html>

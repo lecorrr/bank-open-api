@@ -1,5 +1,6 @@
-# The account Jenkins deploys with: everything a Helm release of the bank's services needs, in the bank
-# namespace only. It cannot touch other namespaces, the cluster or the PostgreSQL StatefulSet.
+# The account Jenkins deploys with: everything a Helm release of the bank's services needs, in the bank namespace,
+# and of the provider app, in the provider namespace. It cannot touch other namespaces, the cluster or the
+# PostgreSQL StatefulSet, and it cannot read the provider app's key.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -38,6 +39,45 @@ kind: RoleBinding
 metadata:
   name: jenkins-deployer
   namespace: bank
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-deployer
+    namespace: bank
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-deployer
+---
+# The provider app's release, in its own namespace: the same rights, less the API's IngressRoute and the Secrets.
+# Jenkins keeps this release in ConfigMaps (HELM_DRIVER=configmap in the Jenkinsfile), so the account needs no Secret
+# here, and the provider app's key in provider-app-tls stays out of the bank's CI.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-deployer
+  namespace: provider
+rules:
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-deployer
+  namespace: provider
 subjects:
   - kind: ServiceAccount
     name: jenkins-deployer

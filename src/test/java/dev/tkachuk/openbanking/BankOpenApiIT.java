@@ -115,11 +115,13 @@ class BankOpenApiIT {
 
         api.get().uri("/v2/accounts").header("Consent-ID", consentId)
                 .header("traceparent", "00-" + TRACE_ID + "-b7ad6b7169203331-01")
+                .header("baggage", "provider.note=goes-no-further")
                 .retrieve().toBodilessEntity();
 
         bankCore.verify(getRequestedFor(urlEqualTo("/api/v1/accounts/" + IBAN_A))
                 .withHeader("X-Request-Id", equalTo(REQUEST_ID))
-                .withHeader("traceparent", matching("00-" + TRACE_ID + "-[0-9a-f]{16}-01")));
+                .withHeader("traceparent", matching("00-" + TRACE_ID + "-[0-9a-f]{16}-01"))
+                .withoutHeader("baggage"));
     }
 
     @Test

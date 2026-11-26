@@ -64,6 +64,12 @@ spec:
                   key: password
             - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
               value: ecs
+            # The spans go to the trace collector; without this variable, as outside the cluster, Spring Boot
+            # exports none. service.version is the commit Jenkins built, so a trace shows which code ran.
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ printf "service.version=%s" (.Values.image.tag | default .Chart.AppVersion) | quote }}
           # Up to two minutes to start; after that a hung JVM is restarted.
           startupProbe:
             httpGet:

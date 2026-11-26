@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "provider-app.name" . }}
+  labels:
+    {{- include "provider-app.labels" . | nindent 4 }}
+spec:
+  # One replica: a visitor's journey to the bank and back lives in its session, in this pod's memory.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "provider-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "provider-app.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "provider-app.name" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The namespace enforces the "restricted" Pod Security Standard; the image runs as user 10001. The key's
+      # file belongs to that group (fsGroup) and to nobody else.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provider-app
+          image: {{ include "provider-app.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8095
+          env:
+            - name: PUBLIC_URL
+              value: {{ .Values.publicUrl | quote }}
+            - name: BANK_ISSUER
+              value: {{ .Values.bank.issuer | quote }}
+            - name: BANK_API_URL
+              value: {{ .Values.bank.apiUrl | quote }}
+            - name: BANK_CONNECT_TO
+              value: {{ .Values.bank.connectTo | quote }}
+            - name: PROVIDER_TLS_DIRECTORY
+              value: /etc/provider-app/tls
+            - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
+              value: ecs
+            # The spans go to the trace collector; service.version is the commit Jenkins built.
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ printf "service.version=%s" (include "provider-app.version" .) | quote }}
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+          lifecycle:
+            # Gives Traefik a moment to stop sending requests before the JVM starts shutting down.
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/provider-app/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.tlsSecret }}
+            defaultMode: 0440
+        # Tomcat's work files; the rest of the file system is read-only.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

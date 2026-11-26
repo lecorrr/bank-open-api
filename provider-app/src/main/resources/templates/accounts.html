@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Your balances')}"></head>
+<body>
+<header th:replace="~{fragments :: header}"></header>
+<main>
+    <h1>Your balances</h1>
+    <p>As your bank reports them now, under the consent you gave.</p>
+    <table>
+        <thead>
+        <tr><th>Account</th><th>Balance</th><th>Amount</th></tr>
+        </thead>
+        <tbody>
+        <th:block th:each="account : ${accounts}">
+            <tr th:each="balance : ${account.balances()}">
+                <td th:text="${account.iban() != null ? account.iban() : account.resourceId()}">UA00...</td>
+                <td th:text="${balance.type()}">closingBooked</td>
+                <td th:text="${balance.amount()} + ' ' + ${balance.currency()}">1.00 UAH</td>
+            </tr>
+            <tr th:if="${#lists.isEmpty(account.balances())}">
+                <td th:text="${account.iban() != null ? account.iban() : account.resourceId()}">UA00...</td>
+                <td colspan="2" class="muted">The bank reports no balance.</td>
+            </tr>
+        </th:block>
+        </tbody>
+    </table>
+    <p><a th:href="@{/}">Back</a></p>
+</main>
+</body>
+</html>

@@ -1,14 +1,15 @@
 # Architecture
 
-Version 0.7.3, step 7 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
+Version 0.8.0, step 8 of 8. bank-open-api is the bank's side of open banking: providers call it, it calls
 bank-core. A provider calls only as itself: an access token from the bank's Keycloak, over mutual TLS on the
 API's own host with the client certificate the token is bound to. It reads account data only under its own
 consents that the customer approved on the bank's page, for accounts that customer holds, and it initiates
 payments, which the customer approves on the same pages and the bank then makes as bank-core transfers. The edge
 does part of the guarding: Traefik takes no connection to the API's host without a certificate from the bank's CA
-and holds each provider to a rate limit, and network policies leave Traefik the only way in. From this version
-the logs of the bank's namespace go to Elasticsearch through Logstash, which masks personal data before anything
-is stored.
+and holds each provider to a rate limit, and network policies leave Traefik the only way in. The logs of the
+bank's namespace go to Elasticsearch through Logstash, which masks personal data before anything is stored. From
+this version a provider app outside the bank goes through the whole flow as a provider would, and the services'
+traces reach Kibana's APM app through an OpenTelemetry Collector that keeps only what its allow-list names.
 
 ## Packages
 
@@ -21,7 +22,7 @@ is stored.
 | `approval` | `CustomerConsentsController`, `CustomerPaymentsController` and their pages, `CustomerPageErrors`, `ApprovalService`: the customer decides on consents and payments, withdraws consents | `bankcore`, `consents`, `payments`, `common`, `security` |
 | `accounts` | `AccountsController`: the account endpoints | `api`, `bankcore`, `consents`, `common`, `security` |
 | `bankcore` | `BankCoreClient`, its properties, the transfer's body and answer, `TransferFailures`: everything that knows bank-core's API | `common` |
-| `common` | `RequestIdFilter`, `ApiExceptionHandler`, `ErrorCode`, `ApiException`, `Iban`, `ResourceIds`, `TppRedirectUris`, `PublicUrlProperties`, `TimeConfig`, `StartupLogger` | nothing of ours |
+| `common` | `RequestIdFilter`, `ApiExceptionHandler`, `TracingConfig`, `ErrorCode`, `ApiException`, `Iban`, `ResourceIds`, `TppRedirectUris`, `PublicUrlProperties`, `TimeConfig`, `StartupLogger` | nothing of ours |
 
 The contract's types stay in `api` and the controllers; bank-core's JSON stays in `bankcore`; SQL stays in
 `ConsentRepository` and `PaymentRepository`; Spring Security stays in `security`, and the controllers learn the
@@ -341,6 +342,60 @@ provider ── GET https://api.localhost:8443/v2/accounts, client certificate, 
 on as `X-Request-Id`, the header bank-core logs under, and the RestClient from Spring Boot's builder sends the
 `traceparent`. bank-core's log lines about the request then carry the same request id and trace id.
 
+## The provider app
+
+`provider-app/` is a provider's site as a provider would build it, kept in this repository for the demo. It runs in
+the namespace `provider`, outside the bank, and reaches the bank only the way any provider's server does: through
+Traefik, on the bank's public names, with a key and certificate of its own.
+
+```
+customer's browser       provider app (namespace provider)                    the bank, through Traefik
+ │ POST /consents ─────► a new state, 16 random bytes, into the session
+ │                       a token: client_credentials, a PS256 assertion,
+ │                       mutual TLS ────────────────────────────────────────► Keycloak: bound to the certificate
+ │                       POST /v2/consents/account-access, TPP-Redirect-URI
+ │                       .../consents/done?state=... ───────────────────────► bank-open-api: 201, scaRedirect
+ │ ◄── 302 scaRedirect ◄─
+ │ ── signs in and approves on the bank's page, as above ────────────────────► the consent is valid
+ │ ◄── 302 .../consents/done?state=... ◄──────────────────────────────────────
+ │ GET /consents/done ─► the state compared in constant time, then the
+ │                       consent's status ─────────────────────────────────► valid
+ │ ◄── 302 /accounts
+ │ GET /accounts ──────► the accounts, then each one's balances,
+ │                       PSU-IP-Address ───────────────────────────────────► bank-open-api ── bank-core
+ │ ◄── the balances
+```
+
+A payment goes the same way: `POST /payments` from the account of the consent, the customer approves on the bank's
+page, and `/payments/done` shows the status the bank reports (`ACCC` within the bank).
+
+- **Its packages**: `bank` knows the bank: `BankTokens` (OpenID Connect discovery, the client credentials grant
+  with a `ClientAssertion`, one token kept until 30 seconds before its end), `BankApi` (consents, accounts and
+  balances, payments; the bank's problem details become a `BankApiException` with the contract's code),
+  `BankConnection` (the RestClient with the SSL bundle `bank`: the provider app's key and certificate and the bank's
+  test CA) and `BankEdgeResolver`. `web` holds the pages: `ProviderController`, the customer's `Journey` in the
+  session, `BankErrors` for the bank's refusals (502, with the code) and silences (503), `SecurityConfig` (CSRF
+  tokens on every form, no sign-in, as the provider app keeps no users of its own) and `TracingConfig`, the same
+  span names as the bank's. The top package has `ProviderProperties` and `StartupLogger`, which logs the version
+  at start (`provider-app 0.8.0 started`).
+- **The bank's names, Traefik's address**: in a pod, `localhost` is the pod itself and `api.localhost` leads
+  nowhere. `BankEdgeResolver` answers HttpClient's lookup of the bank's two names with the addresses of Traefik's
+  Service in `kube-system`, port 443, as curl's `--connect-to` does; TLS still names the bank's host (SNI) and checks
+  the certificate against it, and Traefik routes by it. Outside the cluster `BANK_CONNECT_TO` is empty and nothing is
+  remapped.
+- **Its key stays its own**: `cluster-up.sh` issues the provider app's certificate from the bank's test CA into the
+  Secret `provider-app-tls` of `provider`, the only copy of the key. Keycloak's realm takes the certificate alone,
+  from the Secret `provider-app-certificate` in `bank`, as the client `provider-app`'s `jwt.credential.certificate`:
+  Keycloak checks the client assertion's signature against it, and Traefik's header gives it the same certificate to
+  bind the token to.
+- **The return proves nothing by itself**: anyone can open `/consents/done`. The provider app compares the return's
+  `state` with the one in the customer's own session, in constant time, and asks the bank what the customer decided;
+  another state changes nothing and gets a page that says so.
+- **Pages**: Thymeleaf without JavaScript, every form with its CSRF token, a session cookie that is `Secure`,
+  `HttpOnly` and `SameSite=Lax`; Lax lets the cookie come along on the bank's redirect back, a top-level GET.
+- **On the bank's Gateway**: the provider app's HTTPRoute is the one route the Gateway takes from `provider`, on a
+  host of its own, `provider.localhost`, on the Gateway's certificate. A real provider would serve its site itself.
+
 ## The logs
 
 ```
@@ -376,25 +431,72 @@ pipeline and refuses to start if one fails.
 with a made-up IBAN, a username and a database detail, and looks for it in Elasticsearch, masked as `mask.rb`
 masks. Then a connection from the PostgreSQL pod to Elasticsearch must be refused.
 
+## The traces
+
+```
+provider app, bank-open-api, bank-core ── OTLP/HTTP :4318 ──┐
+Traefik: its entry point and router ───── OTLP/HTTP :4318 ──┤
+Keycloak: requests, its database ───────── OTLP/gRPC :4317 ──┴── trace-collector (logging), network policy: from
+                                                                  these five only
+  ├─ memory_limiter: refuses spans before the collector runs out of memory; the senders try again
+  ├─ redaction: only the attributes on the allow-list stay; IBANs, PostgreSQL's quoted values and emails in what
+  │  stays become "masked", and the values in SQL statements "?"
+  └─ otlp_http/apm, with ECK's secret token ── APM Server bank-traces :8200 (network policy: from the collector)
+       └─ Elasticsearch bank-logs: traces-apm-default, logs-apm.error-default, metrics-apm.*
+            └─ Kibana's APM app: the services, each trace across them, its errors, the bank's log lines of its
+               trace.id
+```
+
+What the collector keeps (`cluster/charts/logging/tracing/collector.yaml`), of the resource, the spans and their
+events alike:
+
+| Kind | Kept |
+|---|---|
+| the service | `service.name`, `service.namespace`, `service.version`, `service.instance.id`, the SDK's and the runtime's names and versions, `host.name`, `os.type` |
+| HTTP, OpenTelemetry's names | `http.request.method`, `http.response.status_code`, `http.route`, `url.path`, `url.scheme`, `server.address`, `server.port`, `network.protocol.version`, `error.type` |
+| HTTP, Spring's client names | `method`, `status`, `uri`, `outcome`, `exception`, `client.name`, `http.url`, `peer.service` |
+| Traefik | `entry_point`, `traefik.router.name`, `traefik.service.name` |
+| a database | its system, name and operation, the table, the statement with its values replaced by `?` |
+| Keycloak | `kc.realmName`, `kc.clientId` |
+| an exception | `exception.type`, `exception.message`, `exception.stacktrace`, `exception.escaped` |
+
+Everything else goes: query strings, user agents, client addresses, headers, Keycloak's session, token and user
+ids, the attributes of its user events, a process's command line. Each span counts what was removed and masked.
+
+Who sends what: the Spring Boot services through Micrometer Tracing's OpenTelemetry bridge and the OTLP exporter,
+when the Helm chart sets `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (outside the cluster nothing is exported), with the
+commit Jenkins built as `service.version`; Traefik from its static configuration (`cluster/traefik-config.yaml`);
+Keycloak with `KC_TRACING_ENABLED`, its database calls included. A provider's `traceparent` continues at Traefik,
+so a provider's trace and the bank's line up.
+
+`cluster-up.sh` checks the whole way: it sends a canary span to the collector, as a service sends its own, with a
+made-up IBAN in its path and its exception, a session id, a query string, a user agent, a password on a command
+line, and in its stack trace a key and a row as PostgreSQL quotes them and an email. APM Server must store it as a
+transaction and an error, the IBAN, the quoted values and the email masked and the rest gone. Then connections from
+the PostgreSQL pod to APM Server and to the collector must be refused, as to Elasticsearch.
+
 ## The cluster
 
 | Where | What | Made by |
 |---|---|---|
 | `kube-system` | Traefik with the Gateway API provider, CoreDNS, local-path storage | k3s, `cluster/traefik-config.yaml` |
 | `bank` | namespace with the "restricted" Pod Security Standard | `scripts/cluster-up.sh` |
-| `bank` | Gateway `bank-gateway` (HTTPS, routes from `bank` and `logging`), Traefik's TLS options (`default`, and `providers` for the API's host), default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
+| `bank` | Gateway `bank-gateway` (HTTPS, routes from `bank`, `logging` and `provider`), Traefik's TLS options (`default`, and `providers` for the API's host), default certificate and middleware (`cluster/platform/edge.yaml`), the Secrets of the test CA's certificates | `scripts/cluster-up.sh` |
 | `bank` | network policies: no ingress unless allowed; Traefik to bank-open-api and Keycloak, bank-open-api to bank-core, Keycloak and PostgreSQL, Keycloak and bank-core to PostgreSQL (`cluster/platform/network-policies.yaml`) | `scripts/cluster-up.sh` |
-| `bank` | PostgreSQL (`postgres`) with the databases `bank`, `openbanking` and `keycloak`, Keycloak (`keycloak`) with the realm `bank` (clients `smoke-test` and `bank-approval`, test customer `artem.demo`), their Secrets, account `jenkins-deployer` | `scripts/cluster-up.sh` |
+| `bank` | PostgreSQL (`postgres`) with the databases `bank`, `openbanking` and `keycloak`, Keycloak (`keycloak`) with the realm `bank` (clients `smoke-test`, `provider-app` and `bank-approval`, test customer `artem.demo`), their Secrets (`provider-app-certificate`: the provider app's certificate without its key), account `jenkins-deployer` | `scripts/cluster-up.sh` |
 | `bank` | `bank-core`: Deployment, Service; `bank-open-api`: Deployment, Service, HTTPRoute (pages), IngressRoute (the API's host) | Jenkins, with Helm |
+| `provider` | namespace with the "restricted" Pod Security Standard, network policies: only Traefik reaches the provider app (`cluster/platform/provider.yaml`); the Secret `provider-app-tls`, its key and certificate and the bank's test CA | `scripts/cluster-up.sh` |
+| `provider` | `provider-app`: Deployment, Service, HTTPRoute `provider.localhost` on `bank-gateway` | Jenkins, with Helm |
 | `elastic-system` | the ECK operator 3.5.0 (Helm release `elastic-operator`, Elastic's chart with `cluster/eck-operator.yaml`); "restricted" | `scripts/cluster-up.sh` |
-| `logging` | Elasticsearch, Kibana and Logstash `bank-logs` (Helm release `bank-logs`, `cluster/charts/logging`), Kibana's route, their network policies, the Secrets `log-masking` and `log-reader`; "restricted" | `scripts/cluster-up.sh` |
+| `logging` | Elasticsearch, Kibana and Logstash `bank-logs`, APM Server `bank-traces` and the trace collector (Helm release `bank-logs`, `cluster/charts/logging`), Kibana's route, their network policies, the Secrets `log-masking` and `log-reader`; "restricted" | `scripts/cluster-up.sh` |
 | `log-collector` | Filebeat `bank-logs`, a DaemonSet; "privileged", for the node's log folders | `scripts/cluster-up.sh` |
 | Docker | registry `k3d-bank-registry`, on this machine `localhost:5050` | k3d |
 | this machine | the test CA's key and certificate, a copy of the smoke-test provider's and of the test customer's password, in `~/.config/bank-open-api/pki` | `scripts/cluster-up.sh` |
 
 Ports on this machine, all on 127.0.0.1: 6550 the Kubernetes API, 8443 HTTPS into Traefik (the bank's address
-`localhost`, the API's host `api.localhost` and Kibana's `kibana.localhost`, which curl and systemd's resolver take
-to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no routes.
+`localhost`, the API's host `api.localhost`, Kibana's `kibana.localhost` and the provider app's
+`provider.localhost`, which curl and systemd's resolver take to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP
+entry point, has no routes.
 
 ## Rules
 
@@ -403,6 +505,8 @@ to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no route
 - **Logs name consents and payments, not people**: their ids, counts, statuses and bank-core's error codes, never
   IBANs, names, purposes or amounts. What still reaches a line (a library's exception, Keycloak's events,
   PostgreSQL's details) is masked before it is stored.
+- **Spans carry only what the collector allows**: an attribute nobody has put on its allow-list never reaches
+  Elasticsearch, and an IBAN, a value PostgreSQL quotes or an email in one that does is masked.
 - **Configuration** comes from environment variables (`BANK_CORE_URL`, `DB_URL`, `DB_USER`, `DB_PASSWORD`,
   `PROVIDER_TOKENS_ISSUER`, `PROVIDER_TOKENS_JWK_SET_URI`, `PUBLIC_URL`, `API_URL`, `CUSTOMER_SIGN_IN_TOKEN_URI`,
   `CUSTOMER_SIGN_IN_CLIENT_SECRET`, `LOGGING_STRUCTURED_FORMAT_CONSOLE`), which the Helm chart sets; the database
@@ -585,6 +689,59 @@ to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no route
 - **Kibana on the bank's Gateway.** A host of its own on the same certificate, and a reader with the role viewer; a
   bank would put Kibana behind its staff's sign-in, on an internal address.
 
+- **The collector decides what a span may carry.** The services send what their libraries record, and that changes
+  with every upgrade; a list of what to drop would let the next new attribute through. The redaction processor keeps
+  what its allow-list names, of resources, spans and events alike, and an attribute shows in Kibana only once
+  someone has looked at it and added it.
+- **IBANs masked whole in spans.** The logs keep the country code and the last four characters; the redaction
+  processor replaces what a pattern matches with one fixed text, so a span shows `masked`. Its IBAN pattern is
+  `mask.rb`'s, so both find the same IBANs; PostgreSQL's quoted values go from `Key (` or `Failing row contains (`
+  to the end of their line, as there is no keeping the column names either.
+- **Exceptions keep their message and stack trace.** They are what an error in Kibana is for, and the same masks
+  run over them. A username a library quotes in one has no pattern to find it; Keycloak's events, which name users,
+  lose their attributes instead.
+- **APM Server over plain HTTP inside the cluster.** The collector reads a CA file only when it starts, and ECK
+  renews APM Server's self-signed certificate on its own schedule: TLS would break silently at the first renewal.
+  The hop stays on one node, only the collector may connect, and APM Server still demands ECK's secret token, which
+  the collector takes from ECK's own Secret.
+- **The collector in `logging`.** A pod mounts Secrets of its own namespace only, and ECK keeps APM Server's token
+  in `logging`. The senders are named in the collector's network policy by namespace and pod label
+  (`traceCollector.senders`), Traefik by its own.
+- **Traces 7 days, as logs.** APM's data streams come with Elasticsearch's built-in templates, which keep traces and
+  errors 10 days. `traces@custom` names the ILM policy `bank-traces` and `logs@custom` already names `bank-logs` (one
+  file for both: an index a day, deleted 7 days after it rolls over); ILM wins over the templates' data stream
+  lifecycle because `index.lifecycle.prefer_ilm` is on by default. Data streams that exist already get the settings
+  too. APM's metrics, counts and latencies per service and route, keep Elastic's retention.
+- **Failure stores 7 days.** APM's data streams have a failure store, where Elasticsearch keeps documents it could
+  not index, for 30 days by default; the cluster setting `data_streams.lifecycle.retention.failures_default` keeps
+  every failure store 7 days, like the rest.
+- **No service map.** Kibana draws one only under Elastic's Platinum license, and ECK runs the stack on the free
+  Basic license. A trace's waterfall shows the same calls for one request, which is what a demo needs.
+- **The provider app goes through the edge, not around it.** It could call bank-open-api's Service as bank-core is
+  called, and then nothing it did would meet what a provider meets: Traefik's TLS options, the client certificate
+  check, the rate limit, the routes. `BankEdgeResolver` changes where a connection goes and nothing else, which
+  HttpClient 5.6 allows (`DnsResolver.resolve(host, port)`) and the JDK's client does not.
+- **Jenkins deploys the provider app without reading its key.** Helm keeps a release in Secrets by default, and an
+  account that may write Secrets in `provider` may read `provider-app-tls`. The provider app's release lives in
+  ConfigMaps instead (`HELM_DRIVER=configmap`), and the deploy account has no right to Secrets there;
+  `cluster-up.sh` checks that it has none.
+- **The provider app's spans go to the bank's collector.** A real provider traces in its own systems; the demo wants
+  one picture, and the provider app's spans cross the same masking as the bank's.
+- **A provider's trace is continued, its baggage dropped.** Traefik continues an incoming `traceparent`, the
+  sampled flag included, so a provider's trace and the bank's line up. With every trace kept the flag decides
+  nothing; a bank that kept a share of its traces would let each provider choose for its own. `baggage` is off in
+  bank-open-api (`management.tracing.baggage.enabled: false`): what a provider put there would go on to bank-core
+  and into its spans. `BankOpenApiIT` checks bank-core gets none.
+- **Keycloak samples on its own.** Its sampler (`traceidratio`) is not parent-based; at its default ratio of 1.0
+  every request is traced, and its spans join the caller's trace because the trace id is the caller's.
+- **No spans for Spring Security's filters.** Each step of the security chain would be a span of its own, a dozen a
+  request with nothing in them; `management.observations.enable.spring.security: false` leaves the request's span
+  and the calls it makes.
+- **OpenTelemetry's names for the server spans.** Spring's default names a request's attributes `method`, `uri` and
+  `status`, which APM Server keeps as unknown labels; `OpenTelemetryServerRequestObservationConvention`
+  (`TracingConfig`) gives the names APM Server reads as HTTP, the ones Traefik and Keycloak use. The client spans
+  keep Spring's names, which the collector allows too, and `http.url`, whose IBAN it masks.
+
 ## Extending it
 
 - **Endpoint**: its operation from GD Next's YAML into `bank-open-api.yaml`, then the generated method in a
@@ -615,3 +772,12 @@ to 127.0.0.1), 5050 the registry. 8480, Traefik's HTTP entry point, has no route
   test block at the end of the file; Logstash runs it at its next start.
 - **Another namespace's logs**: Filebeat's `collectedNamespace` in the logging chart's values (or a second path in
   its input), and a test in `mask.rb` for what that namespace writes.
+- **Something more in the traces**: its attribute's name in `allowed_keys` of
+  `cluster/charts/logging/tracing/collector.yaml`, once it is clear what its values can hold; if they can hold
+  something personal, a pattern in `blocked_values` and a value of the canary span (`canary_span` in
+  `cluster-up-logging.sh`) that must not be stored.
+- **Another service that traces**: its namespace and its pods' `app.kubernetes.io/name` in `traceCollector.senders`
+  of the logging chart's values, and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` in its chart, as in this one.
+- **Another provider's site**: a client in the realm like `provider-app`, its certificate from a Secret as
+  `ensure_provider_certificate` makes it, a namespace like `provider` with its policies, the namespace in the
+  Gateway's `allowedRoutes` and its host on the Gateway's certificate.

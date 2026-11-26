@@ -1,0 +1,43 @@
+# Values for the k3d cluster in cluster/. Jenkins sets image.tag to the commit it built.
+image:
+  repository: localhost:5050/provider-app
+  tag: ""   # empty: the chart's appVersion
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8095
+
+# The provider's own address, where customers' browsers open its pages and the bank sends them back.
+publicUrl: https://provider.localhost:8443
+
+# The bank as a provider outside it knows it: its authorization server and its API. Inside the cluster localhost and
+# api.localhost would be this pod, so connections to those addresses go to Traefik's Service instead, with the
+# bank's names kept for TLS and the Host header.
+bank:
+  issuer: https://localhost:8443/realms/bank
+  apiUrl: https://api.localhost:8443
+  connectTo: traefik.kube-system.svc.cluster.local:443
+
+# Secret with the keys tls.key, tls.crt and ca.crt: the provider's key and certificate from the bank's CA, and the
+# CA. scripts/cluster-up.sh creates it in this namespace; the bank keeps only the certificate.
+tlsSecret: provider-app-tls
+
+# The provider's spans go to the bank's trace collector, so one trace shows both sides: a demo's shortcut, as a real
+# provider would keep its own.
+tracing:
+  endpoint: http://trace-collector.logging.svc.cluster.local:4318/v1/traces
+
+# The pages, through the bank's Gateway on the provider's own host, which the Gateway's certificate names.
+route:
+  enabled: true
+  gateway: bank-gateway
+  gatewayNamespace: bank
+  listener: websecure
+
+# The JVM takes 60 % of the limit for its heap (see the Dockerfile); the rest is metaspace and threads.
+resources:
+  requests:
+    cpu: 100m
+    memory: 320Mi
+  limits:
+    memory: 384Mi

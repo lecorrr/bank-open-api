@@ -2,5 +2,5 @@ apiVersion: v2
 name: bank-open-api
 description: The bank's open banking API for licensed providers, in front of bank-core
 type: application
-version: 0.7.3
-appVersion: "0.7.3"
+version: 0.8.0
+appVersion: "0.8.0"

@@ -1,0 +1,76 @@
+server:
+  port: 8095   # bank-core has 8080 and bank-open-api 8090 when they run on one machine
+  # Behind Traefik the browser talks HTTPS to provider.localhost:8443; X-Forwarded-* tell Tomcat so, and the
+  # customer's address reaches the bank as the PSU-IP-Address.
+  forward-headers-strategy: native
+  servlet:
+    session:
+      # A visitor's journey to the bank's page and back takes a few minutes.
+      timeout: 15m
+      cookie:
+        secure: true
+        same-site: lax
+
+spring:
+  application:
+    name: provider-app
+  ssl:
+    bundle:
+      pem:
+        # The provider's side of mutual TLS with the bank: its key and certificate, and the bank's CA, which it
+        # checks the bank's certificate against. Read once, at start.
+        bank:
+          keystore:
+            certificate: file:${provider-app.tls-directory}/tls.crt
+            private-key: file:${provider-app.tls-directory}/tls.key
+          truststore:
+            certificate: file:${provider-app.tls-directory}/ca.crt
+
+provider-app:
+  # The provider's client at the bank's Keycloak; scripts/cluster-up.sh registers its certificate there.
+  client-id: provider-app
+  public-url: ${PUBLIC_URL:https://provider.localhost:8443}
+  # In the cluster the Secret provider-app-tls, which scripts/cluster-up.sh creates, is mounted here.
+  tls-directory: ${PROVIDER_TLS_DIRECTORY:/etc/provider-app/tls}
+  bank:
+    issuer: ${BANK_ISSUER:https://localhost:8443/realms/bank}
+    api-url: ${BANK_API_URL:https://api.localhost:8443}
+    # Empty: the bank's names are looked up as usual. The Helm chart sets Traefik's Service.
+    connect-to: ${BANK_CONNECT_TO:}
+  form:
+    # bank-core's demo accounts: the test customer's, and another customer's to pay.
+    iban: UA843999990000000000000000001
+    payee-iban: UA573999990000000000000000002
+    payee-name: Olena Kovalenko
+    amount: "1.00"
+    remittance: Paid through the provider app
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true   # /actuator/health/liveness and /readiness for Kubernetes
+  tracing:
+    sampling:
+      # Keep every trace: in the cluster the spans go to the trace collector (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+      # set in the Helm chart), and each call to the bank carries a traceparent the bank's trace continues.
+      probability: 1.0
+  observations:
+    enable:
+      # Spring Security's own spans would bury the requests' spans.
+      spring.security: false
+
+logging:
+  pattern:
+    # trace and span id from tracing on every plain-text line
+    correlation: "[%X{traceId:-},%X{spanId:-}] "
+  structured:
+    # For ECS JSON logs (LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs, set in the Helm chart).
+    json:
+      rename:
+        "[traceId]": trace.id
+        "[spanId]": span.id

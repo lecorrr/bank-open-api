@@ -1,7 +1,7 @@
 {
   "policy": {
     "_meta": {
-      "description": "The bank's logs: an index a day, deleted 7 days after its rollover (scripts/cluster-up.sh)"
+      "description": "An index a day, deleted 7 days after its rollover (bank-logs, bank-traces): cluster-up.sh"
     },
     "phases": {
       "hot": {

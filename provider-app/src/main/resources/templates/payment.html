@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Your payment')}"></head>
+<body>
+<header th:replace="~{fragments :: header}"></header>
+<main>
+    <h1>Your payment</h1>
+    <!-- The bank's status of the payment, an ISO 20022 code, in words. -->
+    <div th:switch="${status}">
+        <p th:case="'ACCC'" class="message">Paid: the bank has made the transfer.</p>
+        <p th:case="'ACSC'" class="message">Paid: the bank has made the transfer.</p>
+        <p th:case="'ACSP'" class="message">Accepted: the bank is making the transfer.</p>
+        <p th:case="'ACTC'" class="message">Accepted: the bank is making the transfer.</p>
+        <p th:case="'RJCT'" class="problem">Not paid: the payment was rejected.</p>
+        <p th:case="'CANC'" class="problem">Not paid: the payment was cancelled.</p>
+        <p th:case="*">The bank has not decided yet.</p>
+    </div>
+    <p class="muted">The bank's status: <span th:text="${status}">RCVD</span>.</p>
+    <p><a th:href="@{/}">Back</a></p>
+</main>
+</body>
+</html>

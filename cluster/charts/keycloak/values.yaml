@@ -22,6 +22,10 @@ adminSecret: keycloak-admin
 # realm file needs it); scripts/cluster-up.sh creates it.
 smokeTestProviderSecret: smoke-test-provider
 
+# Secret with the provider app's certificate under "certificate-base64", as for the smoke test, and nothing else: the
+# key stays in the provider's own namespace. scripts/cluster-up.sh creates it.
+providerAppSecret: provider-app-certificate
+
 # Secret with the key client-secret of bank-open-api's client bank-approval; scripts/cluster-up.sh creates it.
 approvalClientSecret: bank-approval-client
 
@@ -41,6 +45,10 @@ route:
   # The same, then the provider's rate limit: for the endpoints only providers call (token, pushed authorization
   # requests).
   providerMiddleware: provider-api
+
+# Keycloak's spans go to the trace collector (cluster/charts/logging) over OTLP/gRPC, Keycloak's default protocol.
+tracing:
+  endpoint: http://trace-collector.logging.svc.cluster.local:4317
 
 resources:
   requests:

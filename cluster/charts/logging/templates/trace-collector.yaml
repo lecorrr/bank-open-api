@@ -1,0 +1,119 @@
+# The trace collector's configuration (tracing/collector.yaml): what a span may keep on its way to APM Server.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trace-collector
+  labels:
+    app.kubernetes.io/name: trace-collector
+    {{- include "logging.labels" . | nindent 4 }}
+data:
+  collector.yaml: |-
+{{ .Files.Get "tracing/collector.yaml" | indent 4 }}
+---
+# The OpenTelemetry Collector every service of the cluster sends its spans to: bank-open-api, bank-core, the provider
+# app, Keycloak and Traefik (network-policies.yaml names them). It keeps only what its configuration allows and passes
+# the spans on to APM Server. One replica is enough here: a restart loses at most the spans of those few seconds.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trace-collector
+  labels:
+    app.kubernetes.io/name: trace-collector
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trace-collector
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trace-collector
+        {{- include "logging.labels" . | nindent 8 }}
+      annotations:
+        # A changed configuration restarts the collector; it reads the file only at start.
+        checksum/config: {{ .Files.Get "tracing/collector.yaml" | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The image is built FROM scratch and runs as user 10001.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: {{ .Values.traceCollector.image | quote }}
+          args:
+            - --config=/etc/trace-collector/collector.yaml
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: APM_SERVER_URL
+              value: "http://bank-traces-apm-http.{{ .Release.Namespace }}.svc:8200"
+            - name: APM_SECRET_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bank-traces-apm-token
+                  key: secret-token
+            # Go's garbage collector keeps the heap under this, below the memory limit; the memory_limiter
+            # processor refuses spans before that.
+            - name: GOMEMLIMIT
+              value: {{ .Values.traceCollector.goMemLimit | quote }}
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: health
+              containerPort: 13133
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.traceCollector.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/trace-collector
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: trace-collector
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trace-collector
+  labels:
+    app.kubernetes.io/name: trace-collector
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: trace-collector
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http

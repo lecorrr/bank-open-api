@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# cluster-up.sh: creates the k3d cluster "bank" and its platform: the bank namespace, the bank's test certificate
-# authority with the certificates it signs, Traefik's HTTPS Gateway and its TLS (a client certificate required on
-# the API's host), PostgreSQL with a database for bank-core, bank-open-api and Keycloak, Keycloak with the realm
-# "bank" (its clients and the test customer), the namespace's network policies, the account Jenkins deploys with,
-# and the bank's logs: the ECK operator, Elasticsearch, Kibana, Logstash, which masks personal data, and Filebeat
-# (scripts/cluster-up-logging.sh). Safe to run again: it creates or fixes only what is missing, starts the cluster
-# if it was stopped, restarts it if its node came up without DNS, and has Keycloak import the realm afresh when the
-# realm file changed. The services themselves come from Jenkins (docs/cluster.md).
+# cluster-up.sh: creates the k3d cluster "bank" and its platform: the bank namespace and the provider app's, the
+# bank's test certificate authority with the certificates it signs (the provider app's key stays in its own
+# namespace), Traefik's HTTPS Gateway and its TLS (a client certificate required on the API's host), PostgreSQL
+# with a database for bank-core, bank-open-api and Keycloak, Keycloak with the realm "bank" (its clients and the
+# test customer), the namespaces' network policies, the account Jenkins deploys with, and the bank's logs and
+# traces: the ECK operator, Elasticsearch, Kibana, Logstash, which masks personal data, Filebeat, APM Server and the
+# trace collector, which masks the spans (scripts/cluster-up-logging.sh). Safe to run again: it creates or fixes only
+# what is missing, starts the cluster if it was stopped, restarts it if its node came up without DNS, and has
+# Keycloak import the realm afresh when the realm file changed. The services and the provider app come from Jenkins
+# (docs/cluster.md).
 #
 #   bash scripts/cluster-up.sh --check   report, change nothing
 #   bash scripts/cluster-up.sh           create or fix what is missing
@@ -15,10 +17,12 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="cluster-up.sh"
-readonly PROJECT_VERSION="0.7.3"
+readonly PROJECT_VERSION="0.8.0"
 readonly CLUSTER="bank"
 readonly CONTEXT="k3d-bank"
 readonly NAMESPACE="bank"
+# The provider app's namespace: a provider's site, outside the bank, which reaches it only through Traefik.
+readonly PROVIDER_NAMESPACE="provider"
 # API, HTTP, HTTPS and registry, as in cluster/k3d.yaml
 readonly HOST_PORTS=(6550 8480 8443 5050)
 readonly CONFIG_DIR="${HOME}/.config/bank-open-api"
@@ -71,9 +75,9 @@ if [[ ! "$LOGGING_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # Keys and certificates are made here, in a folder only this run sees. On exit, Ctrl-C included, it goes, and so
-# does the port-forward to Elasticsearch if one is open.
+# do the port-forwards to Elasticsearch and the trace collector if one is open.
 work="$(mktemp -d)"
-trap 'es_tunnel_close; rm -rf "$work"' EXIT
+trap 'logging_tunnels_close; rm -rf "$work"' EXIT
 
 results=()
 failures=0
@@ -229,11 +233,15 @@ fi
 
 # --- Traefik and the Gateway API ---------------------------------------------------------------------------
 
-# k3s turns a changed HelmChartConfig into a new Traefik Deployment; this one is the setting of this version.
+# k3s turns a changed HelmChartConfig into a new Traefik Deployment; these are settings of this version: the alias
+# headers dropped, the spans sent to the trace collector.
 # shellcheck disable=SC2329  # called through wait_for
 traefik_has_settings() {
-  k -n kube-system get deployment traefik -o jsonpath='{.spec.template.spec.containers[0].args}' 2> /dev/null \
-    | grep -q 'aliasHeadersStrategy=delete'
+  local args
+  args="$(k -n kube-system get deployment traefik -o jsonpath='{.spec.template.spec.containers[0].args}' \
+    2> /dev/null || true)"
+  [[ "$args" == *"aliasHeadersStrategy=delete"* \
+    && "$args" == *"tracing.otlp.http.endpoint=http://trace-collector.logging.svc.cluster.local:4318/v1/traces"* ]]
 }
 
 # k3s applies the node's copy of the settings again at every start, over what kubectl applied: the copy has to be
@@ -277,16 +285,23 @@ fi
 
 # --- namespace ---------------------------------------------------------------------------------------------
 
-step "namespace ${NAMESPACE}"
+step "namespaces ${NAMESPACE} and ${PROVIDER_NAMESPACE}"
 if [[ "$mode" == "fix" ]]; then
   k apply -f cluster/platform/namespace.yaml > /dev/null
+  # The provider's namespace with its network policies: nothing but Traefik reaches the provider app.
+  k apply -f cluster/platform/provider.yaml > /dev/null
 fi
-if k get namespace "$NAMESPACE" > /dev/null 2>&1; then
-  ok "namespace ${NAMESPACE} (Pod Security: $(k get namespace "$NAMESPACE" \
-    -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}'))"
-else
-  fail "namespace ${NAMESPACE} is missing"
-  finish
+for namespace in "$NAMESPACE" "$PROVIDER_NAMESPACE"; do
+  if k get namespace "$namespace" > /dev/null 2>&1; then
+    ok "namespace ${namespace} (Pod Security: $(k get namespace "$namespace" \
+      -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}'))"
+  else
+    fail "namespace ${namespace} is missing"
+    finish
+  fi
+done
+if ! k -n "$PROVIDER_NAMESPACE" get networkpolicy provider-app-ingress > /dev/null 2>&1; then
+  fail "the provider namespace's network policies are missing (cluster/platform/provider.yaml)"
 fi
 
 # --- certificates ------------------------------------------------------------------------------------------
@@ -318,10 +333,11 @@ ensure_ca() {
   ok "test CA created: ${PKI_DIR}/ca.crt, valid 10 years"
 }
 
-# secret_file SECRET KEY FILE: one key of a Secret into a file; an empty file when there is none.
+# secret_file SECRET KEY FILE [NAMESPACE]: one key of a Secret of the bank's namespace, or of NAMESPACE, into a
+# file; an empty file when there is none.
 secret_file() {
-  (umask 077 && k -n "$NAMESPACE" get secret "$1" -o "jsonpath={.data.${2//./\\.}}" 2> /dev/null | base64 -d > "$3") \
-    || : > "$3"
+  (umask 077 && k -n "${4:-$NAMESPACE}" get secret "$1" -o "jsonpath={.data.${2//./\\.}}" 2> /dev/null \
+    | base64 -d > "$3") || : > "$3"
 }
 
 # A certificate is current when the test CA signed it and it runs for RENEW_DAYS more at least.
@@ -342,12 +358,20 @@ wanted_names() {
   sed -n 's/^subjectAltName=//p' <<< "$1" | tr ',' '\n' | grep . | sort | paste -sd, - || true
 }
 
+# What a provider's client certificate may do: sign, in a TLS handshake as a client. Not a CA.
+CLIENT_EXTENSIONS="$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' \
+  'extendedKeyUsage=clientAuth')"
+readonly CLIENT_EXTENSIONS
+
 # issue_certificate NAME SUBJECT EXTENSIONS: a certificate from the test CA for the key in $work/NAME.key, made
-# first if there is none. A renewed provider certificate keeps its key, so the key Keycloak knows still fits.
+# first if there is none. A renewed provider certificate keeps its key, so the key Keycloak knows still fits; a key
+# made anew goes into new_keys, and Keycloak's step below has the realm imported afresh for a provider's.
+new_keys=()
 issue_certificate() {
   local name=$1 subject=$2 extensions=$3
   if [[ ! -s "${work}/${name}.key" ]]; then
     (umask 077 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${work}/${name}.key" 2> /dev/null)
+    new_keys+=("$name")
   fi
   openssl req -new -key "${work}/${name}.key" -subj "$subject" -out "${work}/${name}.csr" 2> /dev/null
   openssl x509 -req -in "${work}/${name}.csr" -CA "${PKI_DIR}/ca.crt" -CAkey "${PKI_DIR}/ca.key" -sha256 \
@@ -380,6 +404,51 @@ ensure_certificate_secret() {
   ok "secret ${name}: certificate issued, valid ${CERTIFICATE_DAYS} days"
 }
 
+# The provider app's key and certificate, with the test CA it checks the bank's certificate against, in the Secret
+# provider-app-tls of its own namespace: the only place its key is kept. Keycloak's realm file takes the certificate
+# alone, from the Secret provider-app-certificate of the bank's namespace, so the bank holds no provider's key.
+# Renewed as ensure_certificate_secret renews, with the same key; the provider app reads its files at start, so a
+# renewal restarts it.
+readonly PROVIDER_TLS_SECRET="provider-app-tls"
+readonly PROVIDER_CERTIFICATE_SECRET="provider-app-certificate"
+ensure_provider_certificate() {
+  local name=provider-app issued=0
+  secret_file "$PROVIDER_TLS_SECRET" tls.crt "${work}/${name}.crt" "$PROVIDER_NAMESPACE"
+  secret_file "$PROVIDER_TLS_SECRET" ca.crt "${work}/${name}-ca.crt" "$PROVIDER_NAMESPACE"
+  if [[ -s "${work}/${name}.crt" ]] && certificate_current "${work}/${name}.crt" \
+    && cmp -s "${work}/${name}-ca.crt" "${PKI_DIR}/ca.crt"; then
+    ok "secret ${PROVIDER_TLS_SECRET} in ${PROVIDER_NAMESPACE}: certificate until $(openssl x509 \
+      -in "${work}/${name}.crt" -noout -enddate | cut -d= -f2)"
+  elif [[ "$mode" == "check" ]]; then
+    local problem="is missing, ends within ${RENEW_DAYS} days or holds another CA"
+    fail "secret ${PROVIDER_TLS_SECRET} in ${PROVIDER_NAMESPACE} ${problem}"
+    return
+  else
+    secret_file "$PROVIDER_TLS_SECRET" tls.key "${work}/${name}.key" "$PROVIDER_NAMESPACE"
+    issue_certificate "$name" "/O=bank-open-api test/CN=provider-app" "$CLIENT_EXTENSIONS"
+    k -n "$PROVIDER_NAMESPACE" create secret generic "$PROVIDER_TLS_SECRET" --type=kubernetes.io/tls \
+      --from-file=tls.crt="${work}/${name}.crt" --from-file=tls.key="${work}/${name}.key" \
+      --from-file=ca.crt="${PKI_DIR}/ca.crt" --dry-run=client -o yaml | k apply -f - > /dev/null
+    issued=1
+    ok "secret ${PROVIDER_TLS_SECRET} in ${PROVIDER_NAMESPACE}: certificate issued, valid ${CERTIFICATE_DAYS} days"
+  fi
+  openssl x509 -in "${work}/${name}.crt" -outform DER | base64 -w 0 > "${work}/${name}.der.b64"
+  secret_file "$PROVIDER_CERTIFICATE_SECRET" certificate-base64 "${work}/${name}.keycloak.b64"
+  if cmp -s "${work}/${name}.der.b64" "${work}/${name}.keycloak.b64"; then
+    ok "secret ${PROVIDER_CERTIFICATE_SECRET}: the provider app's certificate for Keycloak, without its key"
+  elif [[ "$mode" == "check" ]]; then
+    fail "secret ${PROVIDER_CERTIFICATE_SECRET} is missing or holds another certificate than the provider app's"
+  else
+    k -n "$NAMESPACE" create secret generic "$PROVIDER_CERTIFICATE_SECRET" \
+      --from-file=certificate-base64="${work}/${name}.der.b64" --dry-run=client -o yaml | k apply -f - > /dev/null
+    ok "secret ${PROVIDER_CERTIFICATE_SECRET}: the provider app's certificate for Keycloak, without its key"
+  fi
+  if ((issued)) && k -n "$PROVIDER_NAMESPACE" get deployment provider-app > /dev/null 2>&1; then
+    k -n "$PROVIDER_NAMESPACE" rollout restart deployment provider-app > /dev/null
+    note "the provider app restarts to read its new certificate"
+  fi
+}
+
 step "certificates"
 ensure_ca
 if [[ -s "${PKI_DIR}/ca.crt" ]]; then
@@ -394,16 +463,18 @@ if [[ -s "${PKI_DIR}/ca.crt" ]]; then
       --dry-run=client -o yaml | k apply -f - > /dev/null
     ok "secret provider-ca set to the test CA"
   fi
-  # The names Traefik's certificate answers to: the bank's address, the API's host and Kibana's on this machine,
-  # and k3d's load balancer for Jenkins. A certificate of an earlier version, without one of them, is issued again.
+  # The names Traefik's certificate answers to: the bank's address, the API's host, Kibana's and the provider
+  # app's on this machine, and k3d's load balancer for Jenkins. A certificate of an earlier version, without one of
+  # them, is issued again.
+  gateway_names="DNS:localhost,DNS:api.localhost,DNS:kibana.localhost,DNS:provider.localhost"
+  gateway_names+=",DNS:k3d-bank-serverlb,IP:127.0.0.1"
   ensure_certificate_secret bank-gateway-tls "/O=bank-open-api test/CN=localhost" \
     "$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
-      'extendedKeyUsage=serverAuth' \
-      'subjectAltName=DNS:localhost,DNS:api.localhost,DNS:kibana.localhost,DNS:k3d-bank-serverlb,IP:127.0.0.1')"
+      'extendedKeyUsage=serverAuth' "subjectAltName=${gateway_names}")"
   # The test provider "smoke-test": Keycloak's client of that name and scripts/smoke-test.sh.
-  ensure_certificate_secret smoke-test-provider "/O=bank-open-api test/CN=smoke-test" \
-    "$(printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' \
-      'extendedKeyUsage=clientAuth')"
+  ensure_certificate_secret smoke-test-provider "/O=bank-open-api test/CN=smoke-test" "$CLIENT_EXTENSIONS"
+  # The provider app: Keycloak's client provider-app (provider-app/).
+  ensure_provider_certificate
   if [[ "$mode" == "fix" ]]; then
     # A copy for the smoke test on this machine; Jenkins reads the Secret itself.
     secret_file smoke-test-provider tls.crt "${PKI_DIR}/smoke-test.crt"
@@ -614,11 +685,15 @@ realm_secret_new=0
 for secret in "${created_secrets[@]}"; do
   if [[ "$secret" == "bank-approval-client" || "$secret" == "test-customer" ]]; then realm_secret_new=1; fi
 done
+# The realm file takes the providers' certificates when Keycloak imports it: a provider's new key needs a new import.
+for name in "${new_keys[@]}"; do
+  if [[ "$name" == "smoke-test-provider" || "$name" == "provider-app" ]]; then realm_secret_new=1; fi
+done
 if [[ "$mode" == "fix" ]]; then
   if [[ -n "$deployed_checksum" && "$deployed_checksum" != "$realm_checksum" ]]; then
     reset_keycloak_database "the realm file changed"
   elif [[ -n "$deployed_checksum" ]] && ((realm_secret_new)); then
-    reset_keycloak_database "a Secret the realm file names is new"
+    reset_keycloak_database "a Secret or a provider's key the realm file names is new"
   fi
   echo "   deploying Keycloak; a start builds it, the first one also creates its tables: a few minutes"
   if ! h upgrade --install keycloak cluster/charts/keycloak --namespace "$NAMESPACE" > /dev/null; then
@@ -772,11 +847,18 @@ if [[ ! -f "$JENKINS_KUBECONFIG" ]]; then
   fail "${JENKINS_KUBECONFIG} is missing"
 elif [[ "$(can create deployments -n "$NAMESPACE")" == "yes" \
   && "$(can create ingressroutes.traefik.io -n "$NAMESPACE")" == "yes" \
+  && "$(can create deployments -n "$PROVIDER_NAMESPACE")" == "yes" \
+  && "$(can create httproutes.gateway.networking.k8s.io -n "$PROVIDER_NAMESPACE")" == "yes" \
+  && "$(can create ingressroutes.traefik.io -n "$PROVIDER_NAMESPACE")" == "no" \
   && "$(can create statefulsets -n "$NAMESPACE")" == "no" && "$(can get secrets -n kube-system)" == "no" \
-  && "$(can delete networkpolicies -n "$NAMESPACE")" == "no" && "$(can get secrets -n logging)" == "no" ]]; then
-  ok "Jenkins' kubeconfig ${JENKINS_KUBECONFIG}: deploys in ${NAMESPACE}, nothing else"
+  && "$(can delete networkpolicies -n "$NAMESPACE")" == "no" \
+  && "$(can delete networkpolicies -n "$PROVIDER_NAMESPACE")" == "no" \
+  && "$(can get secrets -n "$PROVIDER_NAMESPACE")" == "no" \
+  && "$(can get secrets -n logging)" == "no" ]]; then
+  ok "Jenkins' kubeconfig ${JENKINS_KUBECONFIG}: deploys in ${NAMESPACE} and ${PROVIDER_NAMESPACE}, nothing else"
 else
-  fail "Jenkins' kubeconfig does not give exactly the deploy rights in ${NAMESPACE}: ${JENKINS_KUBECONFIG}"
+  deploy_rights="deploy rights in ${NAMESPACE} and ${PROVIDER_NAMESPACE}"
+  fail "Jenkins' kubeconfig does not give exactly the ${deploy_rights}: ${JENKINS_KUBECONFIG}"
 fi
 
 # --- the bank's logs ---------------------------------------------------------------------------------------
@@ -784,7 +866,8 @@ fi
 logging_up
 
 note "next: Jenkins with the cluster, then the bank-core and bank-open-api jobs (docs/cluster.md)"
+note "the provider app, once Jenkins deployed it: https://provider.localhost:8443"
 note "Keycloak's admin console: kubectl --context ${CONTEXT} -n ${NAMESPACE} port-forward svc/keycloak 8082:8080"
-note "the logs: ${KIBANA_URL}, user log-reader, password: kubectl --context ${CONTEXT} -n logging get secret \\"
-note "  log-reader -o jsonpath='{.data.password}' | base64 -d"
+note "the logs and traces: ${KIBANA_URL}, user log-reader, password: kubectl --context ${CONTEXT} -n logging \\"
+note "  get secret log-reader -o jsonpath='{.data.password}' | base64 -d"
 finish

@@ -13,7 +13,7 @@
 
     <groupId>dev.tkachuk</groupId>
     <artifactId>bank-open-api</artifactId>
-    <version>0.7.3</version>
+    <version>0.8.0</version>
     <name>bank-open-api</name>
     <description>Open banking API of the bank for licensed providers, in front of bank-core</description>
 
@@ -82,7 +82,8 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
-        <!-- Tracing as in bank-core: trace ids in the logs and a traceparent header on every call to bank-core. -->
+        <!-- Tracing as in bank-core: trace ids in the logs, a traceparent header on every call to bank-core, and the
+             spans sent over OTLP to the trace collector when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT names it. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
@@ -97,6 +98,10 @@
                     <artifactId>aopalliance</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
         <!-- The generated API interfaces carry @jakarta.annotation.Generated. -->
         <dependency>

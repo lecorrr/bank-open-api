@@ -59,6 +59,10 @@ route:
     # The provider's certificate passed on to this service, then the provider's rate limit.
     middleware: provider-api
 
+# The service's spans go to the trace collector (cluster/charts/logging) over OTLP/HTTP.
+tracing:
+  endpoint: http://trace-collector.logging.svc.cluster.local:4318/v1/traces
+
 # The JVM takes 60 % of the limit for its heap (see the Dockerfile); the rest is metaspace and threads.
 resources:
   requests:

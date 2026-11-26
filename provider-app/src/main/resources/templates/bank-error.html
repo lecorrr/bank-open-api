@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('The bank did not help')}"></head>
+<body>
+<header th:replace="~{fragments :: header}"></header>
+<main>
+    <h1>The bank did not help</h1>
+    <p class="problem" th:text="${failure.message}">The bank refused creating the consent.</p>
+    <table>
+        <tr th:if="${failure.status() != 0}"><th>Status</th><td th:text="${failure.status()}">401</td></tr>
+        <tr th:if="${failure.code() != null}"><th>Code</th><td th:text="${failure.code()}">CONSENT_INVALID</td></tr>
+        <tr th:if="${failure.detail() != null}"><th>The bank says</th><td th:text="${failure.detail()}">...</td></tr>
+    </table>
+    <p><a th:href="@{/}">Start again</a></p>
+</main>
+</body>
+</html>

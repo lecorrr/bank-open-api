@@ -1,0 +1,22 @@
+{{- if .Values.route.enabled }}
+# Customers' browsers reach the provider's pages on its own host through the bank's Gateway, which admits routes
+# from this namespace (cluster/platform/gateway.yaml). A route that names its host wins over the bank's routes,
+# which name none.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "provider-app.name" . }}
+  labels:
+    {{- include "provider-app.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway }}
+      namespace: {{ .Values.route.gatewayNamespace }}
+      sectionName: {{ .Values.route.listener }}
+  hostnames:
+    - {{ (urlParse .Values.publicUrl).hostname | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ include "provider-app.name" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

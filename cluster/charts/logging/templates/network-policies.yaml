@@ -1,8 +1,10 @@
 # Who may connect to the logging stack's pods, as in the bank's namespace: nothing comes in unless a policy below
-# lets it. Kibana takes Traefik; Elasticsearch takes Kibana, Logstash and the ECK operator; Logstash takes
-# Filebeat. The bank's pods have no way in: their logs leave as files on the node, which Filebeat reads. The
-# kubelet's probes come from the node, which kube-router lets through. scripts/cluster-up.sh checks that a pod of
-# the bank cannot reach Elasticsearch.
+# lets it. Kibana takes Traefik; Elasticsearch takes Kibana, Logstash, APM Server and the ECK operator; Logstash
+# takes Filebeat; APM Server takes the trace collector; the trace collector takes the services that send spans and
+# Traefik. Logs leave the bank's pods as files on the node, which Filebeat reads; spans are the one thing a pod of
+# the bank sends here, and only to the collector. The kubelet's probes come from the node, which kube-router lets
+# through. scripts/cluster-up.sh checks that a pod of the bank reaches neither Elasticsearch nor APM Server, nor the
+# collector unless it is one of the senders.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -27,7 +29,7 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Kibana and Logstash, and the operator, which runs the cluster through its API.
+    # Kibana, Logstash and APM Server, and the operator, which runs the cluster through its API.
     - from:
         - podSelector:
             matchLabels:
@@ -35,6 +37,9 @@ spec:
         - podSelector:
             matchLabels:
               logstash.k8s.elastic.co/name: {{ .Release.Name }}
+        - podSelector:
+            matchLabels:
+              apm.k8s.elastic.co/name: bank-traces
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: elastic-system
@@ -98,6 +103,63 @@ spec:
       ports:
         - port: 5044
           protocol: TCP
+---
+# APM Server: from the trace collector only, which holds its token.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: apm-server-ingress
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      apm.k8s.elastic.co/name: bank-traces
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trace-collector
+      ports:
+        - port: http
+---
+# The trace collector's OTLP ports have no sign-in: this policy is what keeps everyone but the senders out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trace-collector-ingress
+  labels:
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trace-collector
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range .Values.traceCollector.senders }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  {{- toYaml .names | nindent 18 }}
+        {{- end }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: otlp-grpc
+        - port: otlp-http
 ---
 # Filebeat serves nothing.
 apiVersion: networking.k8s.io/v1

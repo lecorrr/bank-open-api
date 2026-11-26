@@ -1,0 +1,4 @@
+{
+  "index.lifecycle.name": "bank-traces",
+  "index.number_of_replicas": 0
+}

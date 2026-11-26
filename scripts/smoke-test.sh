@@ -12,11 +12,15 @@
 # that the bank's address does not serve the API, not even when a call names the API's host, that a call without a
 # token is refused, and, last, that a burst of calls over the provider's rate limit gets 429 with Retry-After. It
 # also checks that a decision without the page's CSRF token is refused. Stops at the first answer that differs.
-# Jenkins runs it after each deploy; it works the same from here.
+# With --provider-app it goes through the provider app instead (provider-app/), as its customer: the provider app
+# asks the bank for a consent, the customer approves on the bank's page and comes back to the provider app, which
+# shows the account's balance; then a payment the same way, and the provider app ends its access. Jenkins runs it
+# after each deploy; it works the same from here.
 #
 #   bash scripts/smoke-test.sh                               through Traefik on this machine
 #   bash scripts/smoke-test.sh https://k3d-bank-serverlb       from Jenkins, on k3d's Docker network
 #   bash scripts/smoke-test.sh --token                       only sign in, and print the access token
+#   bash scripts/smoke-test.sh --provider-app [BASE_URL]     the provider app's journey, as its customer
 #
 # PKI_DIR (default ~/.config/bank-open-api/pki, written by scripts/cluster-up.sh) holds the bank's test CA
 # certificate (ca.crt), the provider's certificate and key (smoke-test.crt, smoke-test.key) and the test
@@ -24,13 +28,17 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="smoke-test.sh"
-readonly PROJECT_VERSION="0.7.3"
+readonly PROJECT_VERSION="0.8.0"
 token_only=0
+provider_app_only=0
 if [[ "${1:-}" == "--token" ]]; then
   token_only=1
   shift
   # Everything else goes to stderr, so the token alone reaches stdout: TOKEN=$(bash scripts/smoke-test.sh --token)
   exec 3>&1 1>&2
+elif [[ "${1:-}" == "--provider-app" ]]; then
+  provider_app_only=1
+  shift
 fi
 readonly BASE_URL="${1:-https://localhost:8443}"
 readonly PKI_DIR="${PKI_DIR:-${HOME}/.config/bank-open-api/pki}"
@@ -48,10 +56,16 @@ readonly TPP_REDIRECT="https://tpp.example/smoke-test/done"
 readonly PUBLIC_URL="https://localhost:8443"
 # The API's own host, where Traefik requires the provider's client certificate in the TLS handshake.
 readonly API_URL="https://api.localhost:8443"
+# The provider app's address (provider-app/), on the bank's Gateway for the demo.
+readonly PROVIDER_URL="https://provider.localhost:8443"
 # The bank's one payment product: credit transfers in UAH to accounts at banks in Ukraine.
 readonly PAYMENTS="/v2/payments/domestic-credit-transfers"
 
-echo "== ${SCRIPT_NAME} (bank-open-api ${PROJECT_VERSION}) against ${BASE_URL} =="
+if ((provider_app_only)); then
+  echo "== ${SCRIPT_NAME} (bank-open-api ${PROJECT_VERSION}): the provider app's journey against ${BASE_URL} =="
+else
+  echo "== ${SCRIPT_NAME} (bank-open-api ${PROJECT_VERSION}) against ${BASE_URL} =="
+fi
 
 for tool in curl openssl base64; do
   if ! command -v "$tool" > /dev/null 2>&1; then
@@ -83,15 +97,19 @@ fi
 # Calls to the API keep its host as the name, for Traefik's TLS options and route and for the certificate, and
 # connect where BASE_URL points: no lookup of the name is needed, here or in Jenkins.
 api_route=(--connect-to "${API_URL#https://}:${base_host}:${base_port}")
+# The provider app's host the same way, for the customer's browser.
+provider_route=(--connect-to "${PROVIDER_URL#https://}:${base_host}:${base_port}")
 
 answer="$(mktemp)"
 headers="$(mktemp)"
 cookies="$(mktemp)"
+# The customer's cookies at the provider app: another site, another jar.
+provider_cookies="$(mktemp)"
 # The password goes to curl from a file, never on a command line; a line break at its end is not part of it.
 password="$(mktemp)"
 # A key and certificate the bank's CA did not sign, made for this run.
 stranger="$(mktemp -d)"
-trap 'rm -f "$answer" "$headers" "$cookies" "$password"; rm -rf "$stranger"' EXIT
+trap 'rm -f "$answer" "$headers" "$cookies" "$provider_cookies" "$password"; rm -rf "$stranger"' EXIT
 tr -d '\n' < "${PKI_DIR}/test-customer.password" > "$password"
 status=""
 
@@ -284,6 +302,89 @@ token_request() {
     --data-urlencode client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
     --data-urlencode "client_assertion=$(client_assertion)"
 }
+
+# --- the provider app, as its customer sees it ----------------------------------------------------------------
+
+# provider_app METHOD PATH [curl options]: the customer's browser at the provider app, with its own cookies, no
+# redirects followed. Sets $status, the body in $answer, $location and $provider_csrf, the CSRF token of the page's
+# forms (empty when the answer has none).
+provider_app() {
+  local method=$1 path=$2
+  shift 2
+  status="$(curl -sS -o "$answer" -D "$headers" -w '%{http_code}' --cacert "$CA" "${provider_route[@]}" \
+    -b "$provider_cookies" -c "$provider_cookies" -X "$method" "$@" "${PROVIDER_URL}${path}")"
+  location="$(sed -n 's/^[Ll]ocation: *\(.*\)\r$/\1/p' "$headers" | tail -1)"
+  if [[ "$location" == /* ]]; then location="${PROVIDER_URL}${location}"; fi
+  provider_csrf="$(sed -n 's/.*name="_csrf" value="\([^"]*\)".*/\1/p' "$answer" | head -1)"
+}
+
+# provider_form: the provider app's start page, for a fresh CSRF token in $form_token.
+provider_form() {
+  provider_app GET /
+  expect "  the provider app's page" 200
+  if [[ -z "$provider_csrf" ]]; then
+    echo "FAIL the provider app's page has no form with a CSRF token: $(head -c 300 "$answer")"
+    exit 1
+  fi
+  form_token="$provider_csrf"
+}
+
+# decide_at_bank PAGE DECISION BACK: the customer signs in on the bank's page and decides; the bank sends the
+# browser back to the provider app, to an address starting with BACK. Sets $back, that address on the provider
+# app's host.
+decide_at_bank() {
+  local page=$1 decision=$2 back_prefix=$3
+  sign_in "$page"
+  browser POST "${PUBLIC_URL}${page}" --data-urlencode "decision=${decision}" --data-urlencode "_csrf=${csrf}"
+  expect_redirect "  ${decision} on the bank's page, and the browser goes back to the provider app" "$back_prefix"
+  back="${location#"${PROVIDER_URL}"}"
+}
+
+provider_journey() {
+  provider_form
+  provider_app POST /consents --data-urlencode "iban=${IBAN}" --data-urlencode "_csrf=${form_token}"
+  expect_redirect "the provider app asks the bank for a consent and sends the customer there" \
+    "${PUBLIC_URL}/customer/consents/"
+  decide_at_bank "${location#"${PUBLIC_URL}"}" approve "${PROVIDER_URL}/consents/done?state="
+  provider_app GET "$back"
+  expect_redirect "the provider app learns from the bank that the consent is valid" "${PROVIDER_URL}/accounts"
+  provider_app GET /accounts
+  expect "the provider app reads the account under the consent" 200
+  page_has "  its page shows the account" "$IBAN"
+  page_has "  and its balance" " UAH</td>"
+
+  provider_form
+  provider_app POST /payments --data-urlencode "creditorIban=${OTHERS_IBAN}" \
+    --data-urlencode "creditorName=Olena Kovalenko" --data-urlencode "amount=1.00" \
+    --data-urlencode "remittance=Smoke test through the provider app" --data-urlencode "_csrf=${form_token}"
+  expect_redirect "the provider app starts a payment of 1.00 UAH and sends the customer to the bank" \
+    "${PUBLIC_URL}/customer/payments/"
+  decide_at_bank "${location#"${PUBLIC_URL}"}" approve "${PROVIDER_URL}/payments/done?state="
+  provider_app GET "$back"
+  expect "the provider app asks the bank about the payment" 200
+  page_has "  the bank made it within the bank at once" "the bank has made the transfer"
+  page_has "  its status ACCC" "status: <span>ACCC</span>"
+
+  # The bank's return carries the state of the customer's own trip; any other changes nothing.
+  provider_app GET "/consents/done?state=$(openssl rand -hex 16)"
+  expect "a return to the provider app with another state is refused" 400
+  provider_app POST /consents --data-urlencode "iban=${IBAN}"
+  expect "a form posted to the provider app without its CSRF token is refused" 403
+  # Ending the access deletes the consent at the bank; the provider app says so only once the bank agreed.
+  provider_form
+  provider_app POST /consents/end --data-urlencode "_csrf=${form_token}"
+  expect_redirect "the provider app ends its access" "${PROVIDER_URL}/"
+  provider_app GET /
+  page_has "  the bank deleted the consent" "the bank lets it read no more"
+  provider_app GET /accounts
+  expect_redirect "  and the provider app reads no more" "${PROVIDER_URL}/"
+}
+
+if ((provider_app_only)); then
+  provider_journey
+  echo "== the provider app's journey passed =="
+  exit 0
+fi
 
 # --- signing in ----------------------------------------------------------------------------------------------
 

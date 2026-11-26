@@ -1,0 +1,101 @@
+/* The provider's only stylesheet. */
+body {
+    margin: 0;
+    background: #f3f7f4;
+    color: #17251c;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+}
+
+header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: baseline;
+    padding: 1rem 2rem;
+    background: #1f6f43;
+    color: #fff;
+}
+
+header .brand {
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+main {
+    max-width: 40rem;
+    margin: 2rem auto;
+    padding: 2rem;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+h1 {
+    margin-top: 0;
+    font-size: 1.5rem;
+}
+
+h2 {
+    font-size: 1.1rem;
+}
+
+label {
+    display: block;
+    margin-top: 0.75rem;
+    font-weight: 600;
+}
+
+input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem;
+    border: 1px solid #c7d3cb;
+    border-radius: 4px;
+    font: inherit;
+}
+
+button {
+    margin-top: 1rem;
+    padding: 0.5rem 1rem;
+    border: 0;
+    border-radius: 4px;
+    background: #1f6f43;
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+}
+
+button.secondary {
+    background: #5c6b61;
+}
+
+table {
+    width: 100%;
+    margin: 1rem 0;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 0.5rem;
+    border-bottom: 1px solid #e1e8e3;
+    text-align: left;
+}
+
+.message {
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    background: #e3f3e8;
+}
+
+.problem {
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    background: #fbe7e7;
+    color: #8f1d1d;
+}
+
+.muted {
+    color: #5c6b61;
+}

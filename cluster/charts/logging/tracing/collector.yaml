@@ -1,0 +1,145 @@
+# The trace collector's configuration. Every service of the cluster sends its spans here over OTLP: bank-open-api,
+# bank-core, the provider app, Keycloak and Traefik. Only what this file lets through reaches APM Server, Elasticsearch
+# and Kibana. Personal data stays out the same way it does for the logs (masking/mask.rb): a span keeps only the
+# attributes on the list below, and an IBAN in one of the kept values is masked. scripts/cluster-up.sh sends a
+# canary span through here and checks what Elasticsearch stores. The collector's chart sets the environment variables:
+# POD_IP, APM_SERVER_URL and APM_SECRET_TOKEN.
+extensions:
+  # The kubelet's probes ask here.
+  health_check:
+    endpoint: ${env:POD_IP}:13133
+
+receivers:
+  otlp:
+    protocols:
+      # Keycloak sends over gRPC, its default; the other services send over HTTP.
+      grpc:
+        endpoint: ${env:POD_IP}:4317
+      http:
+        endpoint: ${env:POD_IP}:4318
+
+processors:
+  # First in the pipeline: a collector short of memory refuses spans, and the senders retry, instead of the collector
+  # being killed for going over its memory limit.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+  redaction:
+    # Closed by default: an attribute that is not on the list is removed from the span, its events and its resource.
+    # A new instrumentation's attributes stay out until someone has looked at them and added them here.
+    allow_all_keys: false
+    allowed_keys:
+      # Who sent the span: the resource. Not process.command_line, which can carry a secret, nor the host's IP.
+      - service.name
+      - service.namespace
+      - service.version
+      - service.instance.id
+      - telemetry.sdk.name
+      - telemetry.sdk.language
+      - telemetry.sdk.version
+      - telemetry.distro.name
+      - telemetry.distro.version
+      - host.name
+      - os.type
+      - process.runtime.name
+      - process.runtime.version
+      # HTTP in OpenTelemetry's names: Traefik, Keycloak, and the services' own pages and API (Spring's OpenTelemetry
+      # convention). Not url.query or url.full, whose query parameters can hold a code or a customer's name, nor the
+      # caller's address, user agent or headers.
+      - http.request.method
+      - http.request.method_original
+      - http.response.status_code
+      - http.route
+      - url.path
+      - url.scheme
+      - server.address
+      - server.port
+      - network.protocol.version
+      - error.type
+      # HTTP in Spring's own names, on the calls the services make (RestClient). http.url is the full URL; an IBAN
+      # in its path is masked below.
+      - method
+      - status
+      - uri
+      - outcome
+      - exception
+      - client.name
+      - http.url
+      - peer.service
+      # Spring's scheduled jobs.
+      - code.function
+      - code.namespace
+      # Traefik: which entry point, router and service took the request.
+      - entry_point
+      - traefik.router.name
+      - traefik.service.name
+      # Keycloak's database calls. Not db.user or db.connection_string; the statements are sanitized below.
+      - db.system
+      - db.system.name
+      - db.namespace
+      - db.name
+      - db.operation
+      - db.operation.name
+      - db.collection.name
+      - db.sql.table
+      - db.statement
+      - db.query.text
+      # Keycloak's own tags: the realm and the client, never a session, token or authentication session id.
+      - kc.realmName
+      - kc.clientId
+      # A span event for an exception. Keycloak's user events (LOGIN and the like) keep their name and lose their
+      # attributes: the username, the user id, the IP address.
+      - exception.type
+      - exception.message
+      - exception.stacktrace
+      - exception.escaped
+    # What matches is replaced, in every value kept; "." stops at the end of a line, so a pattern ending in ".*"
+    # takes the rest of that line only, also in a stack trace.
+    blocked_values:
+      # An IBAN in its electronic form or printed in groups of four, the pattern of mask.rb. Lowercase ids, such as
+      # trace ids, never match.
+      - '\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\b'
+      # The values PostgreSQL quotes in an error's detail, which an exception's message and stack trace carry: a
+      # duplicate or missing key, Key (email)=(...) already exists, and the row that broke a rule, Failing row
+      # contains (...). mask.rb masks the same in the logs.
+      - '\bKey \(.*'
+      - '\bFailing row contains \(.*'
+      # An email address, wherever a kept value quotes one.
+      - '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+    # A trace needs no account: unlike the logs, which keep the last four characters, the whole IBAN goes.
+    masking_string: masked
+    # The values of a SQL statement go too; its shape stays.
+    db_sanitizer:
+      sql:
+        enabled: true
+        attributes:
+          - db.statement
+          - db.query.text
+    # Each span counts what was removed and masked (redaction.redacted.count, redaction.masked.count), without
+    # naming the attributes.
+    summary: info
+
+exporters:
+  # APM Server takes OTLP on its own port and needs its secret token; ECK makes both.
+  otlp_http/apm:
+    endpoint: ${env:APM_SERVER_URL}
+    headers:
+      Authorization: Bearer ${env:APM_SECRET_TOKEN}
+    # Spans go out in batches, from a queue that holds them while APM Server restarts.
+    sending_queue:
+      batch: {}
+
+service:
+  extensions:
+    - health_check
+  pipelines:
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - memory_limiter
+        - redaction
+      exporters:
+        - otlp_http/apm

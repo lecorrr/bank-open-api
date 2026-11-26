@@ -5,11 +5,32 @@ payments, only with the customer's consent. It follows the Berlin Group NextGenP
 open banking specifications use, and sits in front of [bank-core](https://github.com/lecorrr/bank-core). Project 3
 of three, with bank-core and [bank-integration](https://github.com/lecorrr/bank-integration).
 
-**Status: 0.7.3, step 7 of 8: the logs.** The logs of the bank's namespace (bank-open-api, bank-core, Keycloak,
-PostgreSQL) go to Elasticsearch through Logstash, which masks personal data before anything is stored, and
-Kibana shows them at `https://kibana.localhost:8443`. The stack runs on ECK, Elastic's operator, and
-`cluster-up.sh` checks the whole way with a canary line that must arrive masked. The API, consents, payments and
-the edge work as in 0.6.1.
+**Status: 0.8.0, all eight steps done.** A provider's site of its own, the provider app (`provider-app/`), takes
+a customer through the whole flow at `https://provider.localhost:8443`: it signs in at Keycloak with its own key
+and certificate, asks the bank for a consent, sends the customer to the bank's page and shows the balances once
+they approve, then starts a payment the same way. Every service on the way (the provider app, Traefik, Keycloak,
+bank-open-api, bank-core) sends its spans to one OpenTelemetry Collector, which keeps only the attributes on its
+allow-list and masks IBANs, and Kibana's APM app shows each trace across them with its logs. The API, consents,
+payments, the edge and the logs work as in 0.7.3.
+
+- **A provider outside the bank**: the provider app runs in a namespace of its own (`provider`) and reaches the
+  bank only through Traefik, as any provider's server would. It signs in with `private_key_jwt` (PS256) over mutual
+  TLS and gets a token bound to its certificate; its key never leaves its namespace, and Keycloak's realm holds only
+  the certificate. The bank's return carries a random `state` that the provider app compares in constant time, and
+  what the customer decided is read from the bank, never from the return.
+- **Traces in Kibana**: OTLP from the five services to the collector in the `logging` namespace, on to Elastic
+  APM Server (run by ECK) and Kibana's APM app. One trace runs from the provider app's page through Traefik and
+  bank-open-api to bank-core, or through Traefik to Keycloak, and the bank's spans show the log lines written
+  under them.
+- **Masking for traces too, closed by default**: the collector's redaction processor drops every attribute that
+  is not on its allow-list (`cluster/charts/logging/tracing/collector.yaml`), replaces an IBAN anywhere in a kept
+  value with `masked`, and puts `?` for the values in SQL statements. `cluster-up.sh` sends a canary span full of
+  things that must not be stored, a process command line, a query string, a user agent and an IBAN among them, and
+  checks what Elasticsearch keeps.
+- **Kept 7 days, failures too**: the traces get a lifecycle policy of their own, the same as the logs', and the
+  data streams' failure stores, 30 days by default, keep 7.
+- **Network policies for the traces**: only the five senders reach the collector, only the collector reaches APM
+  Server, and only APM Server joins those who reach Elasticsearch.
 
 - **Masking before storage**: Logstash's ruby filter (`cluster/charts/logging/masking/mask.rb`) goes through
   every field of every line. IBANs keep their country code and last four characters; usernames, Keycloak's user
@@ -89,19 +110,22 @@ the edge work as in 0.6.1.
   the Gateway API, HTTPS only: the Gateway belongs to the `bank` namespace, each service's chart brings its route
   (the API's own host through a Traefik IngressRoute).
 - **Helm and Jenkins**: one chart per service, this one and bank-core's, plus PostgreSQL's and Keycloak's for the
-  platform. Jenkins tests, builds the image, pushes it and runs `helm upgrade --install --rollback-on-failure`
-  with an account that may deploy in the `bank` namespace and nothing else, waits until only pods of the new image
-  are left, then signs in as the test provider and takes consents and payments through the API via Traefik.
+  platform and the provider app's. Jenkins tests, builds the images, pushes them and runs `helm upgrade --install
+  --rollback-on-failure` with an account that may deploy in the `bank` and `provider` namespaces and nothing else,
+  waits until only pods of the new image are left, then signs in as the test provider and takes consents and
+  payments through the API via Traefik; then it deploys the provider app, whose key it cannot read, and goes
+  through it as the customer.
 - **Locked-down pods**: the namespace enforces the "restricted" Pod Security Standard. Pods run as user 10001 on a
   read-only file system, without a service account token, with probes on Spring Boot's liveness and readiness.
 - **One trace and one request id across services**: a provider's `traceparent` continues into bank-core, and its
-  `X-Request-ID` goes along as bank-core's `X-Request-Id`. Every read of account data is logged under the consent
-  id; logs are ECS JSON in the cluster, searchable in Kibana by either id.
+  `X-Request-ID` goes along as bank-core's `X-Request-Id`; its `baggage` stops at the bank. Every read of account
+  data is logged under the consent id; logs are ECS JSON in the cluster, searchable in Kibana by either id.
 
-Stack: Java 21, Spring Boot 4.1 (RestClient, JdbcClient, Thymeleaf, scheduling), Spring Security 7.1 (OAuth 2.0 resource
-server and login), Keycloak 26.8, openapi-generator, PostgreSQL 17 with Flyway, Micrometer Tracing with
-OpenTelemetry, k3d with k3s 1.36, Traefik 3.7 with the Gateway API, Helm 4, Jenkins, Elasticsearch, Kibana,
-Logstash and Filebeat 9.5 on ECK 3.5, JUnit, Testcontainers, WireMock, Maven. The design is in
+Stack: Java 21, Spring Boot 4.1 (RestClient, JdbcClient, Thymeleaf, scheduling), Spring Security 7.1 (OAuth 2.0
+resource server and login), Keycloak 26.8, openapi-generator, PostgreSQL 17 with Flyway, Micrometer Tracing with
+OpenTelemetry and OTLP, the OpenTelemetry Collector 0.166, k3d with k3s 1.36, Traefik 3.7 with the Gateway API,
+Helm 4, Jenkins, Elasticsearch, Kibana, Logstash, Filebeat and APM Server 9.5 on ECK 3.5, JUnit, Testcontainers,
+WireMock, Maven. The design is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Build and test
@@ -122,6 +146,12 @@ themselves, and a customer whose sign-in and decisions the tests walk through as
 line-coverage gate (report in `target/site/jacoco/index.html`). The API code is generated into
 `target/generated-sources` on every build.
 
+The provider app is a project of its own, built with the same wrapper; its tests need no Docker:
+
+```
+./mvnw -f provider-app/pom.xml verify
+```
+
 ## Run on this machine
 
 PostgreSQL in Docker, on localhost port 5437 (`OPENBANKING_DB_PORT` picks another):
@@ -134,7 +164,7 @@ docker compose up -d
 ./mvnw spring-boot:run
 ```
 
-The log shows the running version (`bank-open-api 0.7.3 started`), and the contract this version serves is at
+The log shows the running version (`bank-open-api 0.8.0 started`), and the contract this version serves is at
 `localhost:8090/openapi/bank-open-api.yaml`. Every call to the API needs a provider's token from Keycloak and the
 client certificate it is bound to, and the customer pages need Keycloak's login, which only the cluster has, so on
 this machine the API answers `401 TOKEN_UNKNOWN`; the integration tests cover both.
@@ -143,14 +173,24 @@ this machine the API answers `401 TOKEN_UNKNOWN`; the integration tests cover bo
 
 [docs/cluster.md](docs/cluster.md) has the steps: the tools (`scripts/install-tools.sh`), the cluster with the
 test CA, Traefik's HTTPS Gateway and TLS options, PostgreSQL, Keycloak, the network policies, Jenkins' deploy
-account and the logging stack (`scripts/cluster-up.sh`), Jenkins, Kibana, and calls by hand. Once both services
-are deployed, the smoke test signs in as the test provider, takes consents and payments through Traefik on the
-API's host, has the test customer decide on them on the bank's pages, and checks the edge's refusals and the
-provider's rate limit:
+account, the logs and the traces (`scripts/cluster-up.sh`), Jenkins, Kibana, and calls by hand. Once both
+services are deployed, the smoke test signs in as the test provider, takes consents and payments through Traefik
+on the API's host, has the test customer decide on them on the bank's pages, and checks the edge's refusals and
+the provider's rate limit:
 
 ```
 bash scripts/smoke-test.sh
 ```
+
+Jenkins deploys the provider app next. Open <https://provider.localhost:8443>, ask for access with the filled-in
+IBAN and sign in at the bank as the test customer (docs/cluster.md has the password). The same journey by script:
+
+```
+bash scripts/smoke-test.sh --provider-app
+```
+
+Then Kibana's APM app (<https://kibana.localhost:8443/app/apm/services>) lists the five services, and a
+transaction of the provider app opens its trace through Traefik, Keycloak, bank-open-api and bank-core.
 
 ## Layout
 
@@ -163,29 +203,35 @@ src/main/java/dev/tkachuk/openbanking/
   approval/      the customer pages: decide on consents and payments, withdraw consents
   accounts/      the account endpoints, read under a consent
   bankcore/      the client for bank-core's REST API
-  common/        request id filter, error codes and handler, IBAN and id checks, clock, startup log
+  common/        request id filter, error codes and handler, IBAN and id checks, clock, startup log, span names
 src/main/resources/
   static/openapi/         the contract, from GD Next's Open Banking Ukraine YAML
   templates/customer/     the customer pages (Thymeleaf), static/customer/ their stylesheet
   db/migration/           Flyway migrations
 charts/bank-open-api/     Helm chart: Deployment, Service, HTTPRoute (pages), IngressRoute (the API's host)
+provider-app/             the provider app, a Spring Boot project of its own: bank/ signs in at Keycloak and calls
+                          the API, web/ its pages and the customer's journey; chart/ its Helm chart
 cluster/
   k3d.yaml                the cluster: k3s, registry, ports
   traefik-config.yaml     Traefik with the Gateway API
   eck-operator.yaml       the settings of Elastic's ECK operator chart
-  platform/               namespaces, HTTPS Gateway, Traefik's TLS options and middleware, network policies,
-                          Jenkins' deploy account
+  platform/               namespaces (the provider app's in provider.yaml), HTTPS Gateway, Traefik's TLS
+                          options and middleware, network policies, Jenkins' deploy account
   charts/postgres/        PostgreSQL from the official image
   charts/keycloak/        Keycloak from the official image, with the realm bank and its test customer
-  charts/logging/         Elasticsearch, Kibana, Logstash with the masking (masking/mask.rb) and Filebeat on ECK,
-                          their network policies; setup/ the logs' lifecycle and Kibana's saved search
+  charts/logging/         Elasticsearch, Kibana, Logstash with the masking (masking/mask.rb), Filebeat and APM
+                          Server on ECK, the trace collector (tracing/collector.yaml), their network policies;
+                          setup/ the lifecycle of logs and traces and Kibana's saved search
 scripts/
   install-tools.sh        k3d, kubectl and helm into ~/.local/bin
   cluster-up.sh           the cluster and its platform, certificates included, safe to run again
-  cluster-up-logging.sh   its part for the logs: ECK, the stack, the lifecycle, Kibana, the canary line
-  smoke-test.sh           the test provider's consents and payments, the test customer's decisions, the edge
+  cluster-up-logging.sh   its part for logs and traces: ECK, the stack, the lifecycle, Kibana, the canaries
+  smoke-test.sh           the test provider's consents and payments, the test customer's decisions, the edge;
+                          with --provider-app the customer's journey through the provider app
+  smoke-test-files.sh     the smoke test's certificates and password from the cluster's Secrets, for Jenkins
+  wait-for-version.sh     Jenkins waits until only pods of the image it deployed are left
 compose.yaml              PostgreSQL for running on this machine
-Jenkinsfile               test, image, deploy to k3d, smoke test
+Jenkinsfile               test, images, deploy to k3d, smoke tests of the API and of the provider app
 ```
 
 ## The steps
@@ -196,5 +242,5 @@ Jenkinsfile               test, image, deploy to k3d, smoke test
 4. Customer approval of a consent, and the check on every call: token, certificate, consent, account.
 5. Payments that become bank-core transfers, with ISO 20022 statuses.
 6. Edge rules: client certificates and per-provider rate limits in Traefik, network policies.
-7. Logs in Elasticsearch and Kibana through ECK, with a Logstash step that masks IBANs and names. **(this version)**
-8. A small provider app and OpenTelemetry traces in Kibana.
+7. Logs in Elasticsearch and Kibana through ECK, with a Logstash step that masks IBANs and names.
+8. A small provider app and OpenTelemetry traces in Kibana. **(this version)**

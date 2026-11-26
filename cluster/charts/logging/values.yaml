@@ -1,8 +1,10 @@
-# The Elastic Stack for the bank's logs, run by the ECK operator (cluster/eck-operator.yaml): one Elasticsearch
-# node, Kibana, Logstash and Filebeat. scripts/cluster-up.sh installs it as the release bank-logs in the namespace
-# logging; ECK names everything after the release (bank-logs-es-http, bank-logs-kb-http, bank-logs-ls-beats).
+# The Elastic Stack for the bank's logs and traces, run by the ECK operator (cluster/eck-operator.yaml): one
+# Elasticsearch node, Kibana, Logstash and Filebeat for the logs; APM Server and an OpenTelemetry Collector (the trace
+# collector) for the traces. scripts/cluster-up.sh installs it as the release bank-logs in the namespace logging; ECK
+# names the log stack after the release (bank-logs-es-http, bank-logs-kb-http, bank-logs-ls-beats) and APM Server
+# after its own name (bank-traces-apm-http).
 
-# One version for all four; ECK 3.5 runs 8.x and 9.x.
+# One version for the five Elastic parts; ECK 3.5 runs 8.x and 9.x.
 version: 9.5.7
 
 # Secret with the keys username, password and roles: the user Kibana's readers sign in as. scripts/cluster-up.sh
@@ -44,6 +46,37 @@ logstash:
       memory: 1Gi
     limits:
       memory: 1Gi
+
+apmServer:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+traceCollector:
+  # The OpenTelemetry Collector's distribution for Kubernetes: the receivers, processors and OTLP exporters it needs,
+  # in a smaller image than the contrib one.
+  image: otel/opentelemetry-collector-k8s:0.166.0
+  # 80 % of the memory limit, as the collector's documentation advises.
+  goMemLimit: 200MiB
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 256Mi
+  # Who may send spans: the bank's services by their app.kubernetes.io/name, in these namespaces, and Traefik.
+  senders:
+    - namespace: bank
+      names:
+        - bank-open-api
+        - bank-core
+        - keycloak
+    - namespace: provider
+      names:
+        - provider-app
 
 filebeat:
   # Filebeat's own namespace, the one whose Pod Security lets it read the node's folders.

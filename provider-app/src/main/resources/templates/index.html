@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Your bank account')}"></head>
+<body>
+<header th:replace="~{fragments :: header}"></header>
+<main>
+    <p class="message" th:if="${message}" th:text="${message}">A message</p>
+    <p class="problem" th:if="${problem}" th:text="${problem}">A problem</p>
+
+    <section th:unless="${journey.hasValidConsent()}">
+        <h1>Read your account</h1>
+        <p>The provider asks your bank for a consent to read one account's balances for 90 days. You sign in and
+            decide on the bank's page; the provider never sees your password.</p>
+        <form th:action="@{/consents}" method="post">
+            <label for="iban">Your account's IBAN</label>
+            <input id="iban" name="iban" th:value="${defaults.iban()}" required maxlength="42" autocomplete="off">
+            <button type="submit">Ask the bank for access</button>
+        </form>
+    </section>
+
+    <section th:if="${journey.hasValidConsent()}">
+        <h1>Your account</h1>
+        <p>Your bank lets the provider read <strong th:text="${journey.iban()}">UA00...</strong>.</p>
+        <p><a th:href="@{/accounts}">Show its balances</a></p>
+        <form th:action="@{/consents/end}" method="post">
+            <button type="submit" class="secondary">End the provider's access</button>
+        </form>
+    </section>
+
+    <section th:if="${journey.hasValidConsent()}">
+        <h2>Pay from it</h2>
+        <p>The provider asks your bank to make the payment; you approve it on the bank's page.</p>
+        <form th:action="@{/payments}" method="post">
+            <label for="creditorIban">The payee's IBAN</label>
+            <input id="creditorIban" name="creditorIban" th:value="${defaults.payeeIban()}" required maxlength="42"
+                   autocomplete="off">
+            <label for="creditorName">The payee's name</label>
+            <input id="creditorName" name="creditorName" th:value="${defaults.payeeName()}" required maxlength="70">
+            <label for="amount">Amount, UAH</label>
+            <input id="amount" name="amount" th:value="${defaults.amount()}" required maxlength="15"
+                   inputmode="decimal">
+            <label for="remittance">What it is for</label>
+            <input id="remittance" name="remittance" th:value="${defaults.remittance()}" maxlength="140">
+            <button type="submit">Pay at the bank</button>
+        </form>
+    </section>
+</main>
+</body>
+</html>

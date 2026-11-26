@@ -1,0 +1,43 @@
+# APM Server for the bank's traces. It takes the spans of the trace collector, and only the collector may connect
+# (network-policies.yaml), and writes them to Elasticsearch, where Kibana's APM app reads them. Elasticsearch's APM
+# templates make the data streams (traces-apm-default and the metrics APM Server computes from the spans). ECK makes
+# the rest: its user in Elasticsearch, the Service bank-traces-apm-http and the secret token every batch must carry
+# (Secret bank-traces-apm-token), which the collector reads.
+apiVersion: apm.k8s.elastic.co/v1
+kind: ApmServer
+metadata:
+  name: bank-traces
+  labels:
+    app.kubernetes.io/name: apm-server
+    {{- include "logging.labels" . | nindent 4 }}
+spec:
+  version: {{ .Values.version }}
+  count: 1
+  elasticsearchRef:
+    name: {{ .Release.Name }}
+  http:
+    tls:
+      # Plain HTTP inside the cluster, as for Kibana and the services: the token still has to match, and only the
+      # collector reaches the port. With ECK's own certificate the collector would need a restart whenever ECK
+      # renews it, since it reads its CA file only at start.
+      selfSignedCertificate:
+        disabled: true
+  resources:
+    {{- toYaml .Values.apmServer.resources | nindent 4 }}
+  podTemplate:
+    spec:
+      # ECK sets only the seccomp profile for APM Server; Pod Security "restricted" also needs a user that is not
+      # root and no capabilities. The image's user, apm-server, is 1000. A pod security context given here replaces
+      # ECK's whole one, so the seccomp profile is here too.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apm-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

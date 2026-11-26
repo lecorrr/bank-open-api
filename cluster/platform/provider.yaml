@@ -1,0 +1,47 @@
+# The provider app's namespace (provider-app/): a provider's site, which runs in this cluster for the demo but stands
+# outside the bank. It reaches the bank only through Traefik, as any provider does: the bank's network policies
+# (network-policies.yaml) take nothing from here. Its pods meet the "restricted" Pod Security Standard, as the
+# bank's do. scripts/cluster-up.sh applies this file and puts the provider's key and certificate here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: provider
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+# Nothing comes in unless a policy below lets it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress
+  namespace: provider
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# The provider's pages: from Traefik only, which customers' browsers come through.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: provider-app-ingress
+  namespace: provider
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: provider-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: http

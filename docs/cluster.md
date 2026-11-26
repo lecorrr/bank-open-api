@@ -3,10 +3,12 @@
 bank-core and bank-open-api run in a one-node Kubernetes cluster in Docker: k3d with k3s 1.36, Traefik in front
 with HTTPS, mutual TLS and providers' rate limits, Keycloak for the providers' and the customers' sign-in, network
 policies between them. Customers' browsers use the bank's address, `https://localhost:8443`; providers call the API
-on its own host, `https://api.localhost:8443`, where Traefik requires their client certificate. curl and systemd's
-resolver take any name under `localhost` to 127.0.0.1, so nothing goes into `/etc/hosts`. The bank needs about
-4 GB of memory, and the logging stack about 4.5 GB more (Elasticsearch 2, Kibana 1, Logstash 1, Filebeat and the
-ECK operator the rest). Run the commands from `~/projects/bank-open-api` unless a step says otherwise.
+on its own host, `https://api.localhost:8443`, where Traefik requires their client certificate. The provider app, a
+provider's site in a namespace of its own, is at `https://provider.localhost:8443`. curl and systemd's resolver take
+any name under `localhost` to 127.0.0.1, so nothing goes into `/etc/hosts`. The bank needs about 4 GB of memory,
+the provider app 0.4 GB, and the logs and traces about 5.3 GB more (Elasticsearch 2, Kibana 1, Logstash 1, APM
+Server 0.5, the trace collector 0.25, Filebeat and the ECK operator the rest). Run the commands from
+`~/projects/bank-open-api` unless a step says otherwise.
 
 ## 1. The tools
 
@@ -30,35 +32,42 @@ The first run downloads the k3s and Keycloak images, and about 3 GB for the logg
 or more. It creates the cluster `bank` from `cluster/k3d.yaml` and switches kubectl to it, sets up Traefik, and
 makes:
 
-- the `bank` namespace;
+- the `bank` namespace, and `provider` for the provider app, with its network policies: only Traefik reaches the
+  provider app (`cluster/platform/provider.yaml`);
 - the bank's test certificate authority, in `~/.config/bank-open-api/pki` (`ca.key` never leaves this machine),
-  and the certificates it signs: Traefik's server certificate for `localhost`, `api.localhost`, `kibana.localhost`
-  and `k3d-bank-serverlb`, and the client certificate of the test provider `smoke-test` (Secrets `bank-gateway-tls`,
-  `smoke-test-provider`, `provider-ca`, and a copy of the provider's key and certificate in the same folder);
+  and the certificates it signs: Traefik's server certificate for `localhost`, `api.localhost`, `kibana.localhost`,
+  `provider.localhost` and `k3d-bank-serverlb`, the client certificate of the test provider `smoke-test` (Secrets
+  `bank-gateway-tls`, `smoke-test-provider`, `provider-ca`, and a copy of the provider's key and certificate in the
+  same folder), and the provider app's (its key only in the Secret `provider-app-tls` of `provider`, its
+  certificate alone for Keycloak in `provider-app-certificate` of `bank`);
 - the HTTPS Gateway with Traefik's TLS options, a client certificate required on the API's host, and the
   middleware that passes it on and holds each provider to its rate limit (`cluster/platform/edge.yaml`);
 - PostgreSQL with a database for each service and for Keycloak;
 - Keycloak with the realm `bank` (its first start builds it and creates its tables: two or three minutes): the
-  test provider `smoke-test` with the scopes `accounts` and `payments`, bank-open-api's client for the customer
-  pages `bank-approval` (its secret in the
+  test provider `smoke-test` and the provider app `provider-app`, with the scopes `accounts` and `payments`,
+  bank-open-api's client for the customer pages `bank-approval` (its secret in the
   Secret `bank-approval-client`), and the test customer `artem.demo`, customer number C1001 as in bank-core's demo
   data (the password in the Secret `test-customer`, and a copy in `~/.config/bank-open-api/pki` for the smoke
   test);
 - the network policies of the `bank` namespace (`cluster/platform/network-policies.yaml`): a pod there takes
   connections only from the callers its policy names, Traefik for bank-open-api and Keycloak;
-- the account Jenkins deploys with, and its kubeconfig in `~/.config/bank-open-api/jenkins-kubeconfig.yaml`;
-- the logs: the ECK operator 3.5.0 in `elastic-system` (Elastic's chart with `cluster/eck-operator.yaml`), and the
-  stack of `cluster/charts/logging`: one Elasticsearch node, Kibana and Logstash with the masking in `logging`,
-  Filebeat in `log-collector`, their network policies, the Secrets `log-masking` (the key of the masking's
-  pseudonyms) and `log-reader` (Kibana's reader), the lifecycle policy `bank-logs` (7 days) and Kibana's saved
-  search.
+- the account Jenkins deploys with, in `bank` and `provider`, and its kubeconfig in
+  `~/.config/bank-open-api/jenkins-kubeconfig.yaml`;
+- the logs and traces: the ECK operator 3.5.0 in `elastic-system` (Elastic's chart with
+  `cluster/eck-operator.yaml`), and the stack of `cluster/charts/logging`: one Elasticsearch node, Kibana, Logstash
+  with the masking, APM Server and the trace collector with its masking in `logging`, Filebeat in `log-collector`,
+  their network policies, the Secrets `log-masking` (the key of the masking's pseudonyms) and `log-reader`
+  (Kibana's reader), the lifecycle policies `bank-logs` and `bank-traces` (7 days, failure stores too) and Kibana's
+  saved search.
 
 It fetches Keycloak's discovery document through Traefik, which proves TLS, the route and the realm, and then
 checks the network policies are enforced: a connection from the PostgreSQL pod to Keycloak must be refused, while
 Keycloak still answers through Traefik. Last, it waits for the logging stack to be green (up to 15 minutes, as
 `LOGGING_WAIT_SECONDS=1800 bash scripts/cluster-up.sh` can make longer), sends a canary line from a pod in `bank`
-with a made-up IBAN and a username, finds it in Elasticsearch masked, and checks that the PostgreSQL pod cannot
-reach Elasticsearch. Elasticsearch's API it calls through a port-forward of its own, which ends with the run.
+with a made-up IBAN and a username and finds it in Elasticsearch masked, then a canary span to the trace collector
+with an IBAN, a session id, a query string and a database's details and finds it in APM's data masked, and checks
+that the PostgreSQL pod reaches none of Elasticsearch, APM Server and the collector. Elasticsearch's API and the
+collector it calls through port-forwards of their own, which end with the run.
 Every run checks the lot again and fixes only what is missing or about to expire, so it is also how you start the
 cluster after `k3d cluster stop`. `--check` reports without changing anything.
 
@@ -77,7 +86,12 @@ what 0.7.0's stopped at, the lifecycle policy, the saved search, the canary and 
 own run stopped earlier, at Helm's conflict with ECK, which 0.7.2 settles. From 0.7.2 it is Logstash restarted
 with the pipeline that drops each line's copy as it came and with the new `mask.rb`; the logs stored before it hold
 those copies, usernames unmasked in them, so delete them once after this run (section 5). It also puts this
-version's Traefik settings into the node, where k3s reads them again at every start.
+version's Traefik settings into the node, where k3s reads them again at every start. From 0.7.3 it is the
+namespace `provider` with its policies and the provider app's certificate, Traefik's certificate issued again with
+the provider app's host, the Gateway taking the provider app's route, the realm with the client `provider-app`
+(Keycloak's database emptied, the realm imported afresh), Traefik and Keycloak restarted to send their spans,
+Jenkins' right to deploy in `provider`, and in `logging` APM Server, the trace collector, the traces' lifecycle and
+the failure stores' 7 days.
 
 It uses these ports on 127.0.0.1 and stops if one is taken: 6550 (Kubernetes API), 8480 (HTTP, no routes since
 0.3.0), 8443 (HTTPS) and 5050 (image registry).
@@ -100,17 +114,24 @@ The second file adds k3d's Docker network, the deploy account's kubeconfig and t
 Then build the job `bank-core`, and after it a job `bank-open-api` (Pipeline from SCM, repository
 `file:///repos/bank-open-api`, branch `*/main`, script path `Jenkinsfile`). Each deploy stage ends once only pods
 of the new image are left: the old pod answers for a few seconds after the new one is ready, and a test then could
-meet either. bank-open-api's last stage reads the test provider's key and certificate and the test customer's
-password from the cluster's Secrets and runs `scripts/smoke-test.sh` through Traefik.
+meet either. bank-open-api's smoke test reads the test provider's key and certificate and the test customer's
+password from the cluster's Secrets (`scripts/smoke-test-files.sh`) and runs `scripts/smoke-test.sh` through
+Traefik. Then the same job builds and deploys the provider app into `provider` and goes through it as its customer
+(`scripts/smoke-test.sh --provider-app`).
 
 Run `cluster-up.sh` of a new version before Jenkins deploys it: bank-open-api 0.6.0 and later need the TLS options
-and middleware for the API's host and the right to deploy its IngressRoute, and bank-core 0.8.0 or later (the
-accounts' customer numbers), so build `bank-core` first.
+and middleware for the API's host and the right to deploy its IngressRoute, 0.8.0 the namespace `provider` and the
+right to deploy there, and bank-core 0.8.0 or later (the accounts' customer numbers), so build `bank-core` first.
+bank-core sends its spans from 0.9.0 on; with an older one, a trace stops at bank-open-api's call to it.
 
 ## 4. Check it
 
 ```
 kubectl -n bank get pods,svc,gateway,httproute,ingressroute,networkpolicy
+```
+
+```
+kubectl -n provider get pods,svc,httproute,networkpolicy
 ```
 
 The smoke test does what Jenkins' last stage does. It signs in at Keycloak as the test provider with a JWT
@@ -128,6 +149,15 @@ run moves 1.00 UAH between bank-core's demo accounts; the first has 10 000.00 to
 
 ```
 bash scripts/smoke-test.sh
+```
+
+With `--provider-app` it goes through the provider app instead, as its customer: asks for access, signs in and
+approves on the bank's page, comes back to the provider app's balances, pays 1.00 UAH the same way and sees `ACCC`,
+then checks that a return with another visit's state and a form without its CSRF token change nothing, and ends the
+provider app's access:
+
+```
+bash scripts/smoke-test.sh --provider-app
 ```
 
 ### Calls by hand
@@ -274,6 +304,45 @@ kubectl -n logging get elasticsearch,kibana,logstash
 kubectl -n log-collector get beat
 ```
 
+## 6. The provider app
+
+Open `https://provider.localhost:8443` (the browser warns about the test CA's certificate, as on the bank's pages).
+The form has bank-core's first demo account filled in: **Ask the bank for access** sends you to the bank's page,
+where you sign in as `artem.demo` (the password as in section 4) and approve. The bank sends you back, and the
+provider app shows the account's balances under the consent; **Pay at the bank** starts a payment of 1.00 UAH to
+another customer's account, which you approve on the bank's page the same way, and the provider app shows its
+status. **End the provider's access** deletes the consent at the bank. The provider app's own log, where
+`provider-app 0.8.0 started` names the version that runs:
+
+```
+kubectl -n provider logs deploy/provider-app
+```
+
+The provider app reaches the bank only through Traefik, with its own key and certificate: the token request, the
+consent and the reads go through the same TLS options, rate limit and routes as any provider's calls. Its key is
+only in its own namespace:
+
+```
+kubectl -n provider get secret provider-app-tls
+```
+
+## 7. The traces in Kibana
+
+Sign in to Kibana as `log-reader`, as in section 5, and open the APM app (menu, Observability, Applications, or
+`https://kibana.localhost:8443/app/apm/services`): it lists `provider-app`, `traefik`, `keycloak`, `bank-open-api` and
+`bank-core`. Open `provider-app`, a transaction such as `GET /accounts`, and its trace sample: the waterfall shows
+the provider app's call through Traefik to bank-open-api, and bank-open-api's call to bank-core, each span with its
+timing; the token request goes through Traefik to Keycloak and its database. Errors list a trace's exceptions, and
+the trace's logs tab shows the bank's log lines of the same `trace.id`. Kibana's service map needs Elastic's
+Platinum license and stays off on ECK's free one; the waterfall shows the same calls for one request.
+
+`service.name : "trace-canary"` in the APM app's query bar shows `cluster-up.sh`'s canary span, its path ending in
+`masked`. What the collector keeps is in ARCHITECTURE.md (The traces); its log names what it refused:
+
+```
+kubectl -n logging logs deploy/trace-collector
+```
+
 ## Deploy by hand
 
 What Jenkins does, for when you want to try a chart change without a commit. In this repository, after
@@ -289,6 +358,23 @@ docker push localhost:5050/bank-open-api:dev
 
 ```
 helm upgrade --install bank-open-api charts/bank-open-api --namespace bank --set-string image.tag=dev --rollback-on-failure --timeout 5m
+```
+
+The provider app the same way, after `./mvnw -f provider-app/pom.xml package`:
+
+```
+docker build -t localhost:5050/provider-app:dev provider-app
+```
+
+```
+docker push localhost:5050/provider-app:dev
+```
+
+Jenkins keeps the provider app's release in ConfigMaps, as its account may not read Secrets in `provider`; a hand
+deploy has to say so too:
+
+```
+HELM_DRIVER=configmap helm upgrade --install provider-app provider-app/chart --namespace provider --set-string image.tag=dev --rollback-on-failure --timeout 5m
 ```
 
 ## Stop, start, delete
@@ -376,8 +462,9 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
   yaml` shows what Logstash runs; `bash scripts/cluster-up.sh` puts this version's pipeline back.
 - `Kibana does not answer on https://kibana.localhost:8443`: Traefik's certificate is from before 0.7.0 (run
   `bash scripts/cluster-up.sh`, which issues it again), or Kibana is not green yet.
-- `kubectl could not forward a port to Elasticsearch`: kubectl's own words follow. Most often Elasticsearch's pod
-  is not running (`kubectl -n logging get pods`); the port-forward goes to the Service `bank-logs-es-http`.
+- `kubectl could not forward a port to Elasticsearch` (or `to the trace collector`): kubectl's own words follow.
+  Most often the pod is not running (`kubectl -n logging get pods`); the port-forward goes to the Service
+  `bank-logs-es-http` (or `trace-collector`).
 - `ECK's Secret bank-logs-es-http-certs-public in logging has no CA for Elasticsearch`, or `Elasticsearch does not
   answer through the port-forward`: ECK makes that Secret with Elasticsearch's certificate, so the operator did
   not get that far (`kubectl -n elastic-system logs statefulset/elastic-operator`), or the Secret
@@ -401,8 +488,9 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
   password means the Secret `keycloak-db` and the database disagree, and `cluster-up.sh` sets it again.
 - The token request answers `invalid_client`: Keycloak did not accept the signed JWT, because the clock is off,
   or the provider's key no longer matches the certificate Keycloak imported (the Secret `smoke-test-provider` was
-  made again while Keycloak kept its database). `kubectl -n bank logs deploy/keycloak | grep -i smoke-test` names
-  the reason. The way out is a new cluster.
+  made again by hand while Keycloak kept its database). `kubectl -n bank logs deploy/keycloak | grep -i smoke-test`
+  names the reason. `bash scripts/cluster-up.sh` has Keycloak import the realm afresh whenever it makes a provider's
+  key anew; for a Secret made by hand, delete it and run the script.
 - The token request answers `invalid_request` with `Client Certification missing`: curl was not given
   `--cert` and `--key`.
 - The API answers `503` with every token: bank-open-api cannot read Keycloak's keys.
@@ -413,3 +501,35 @@ certificates then no longer match the CA, and Keycloak knows the old provider ce
 - bank-open-api's pod shows `CreateContainerConfigError` with `secret "bank-open-api-db" not found` (older than
   0.2.0) or `secret "bank-approval-client" not found` (older than 0.4.0): the cluster is older than this version.
   Run `bash scripts/cluster-up.sh`, then build the job `bank-open-api` again.
+
+- The provider app's page does not load: `SSL: no alternative certificate subject name matches` means Traefik's
+  certificate is from before 0.8.0 (run `bash scripts/cluster-up.sh`, which issues it again with the provider
+  app's host); `404 page not found` means the provider app is not deployed yet (build the job `bank-open-api`) or
+  the Gateway takes no routes from `provider` (`kubectl -n provider describe httproute provider-app`).
+- The provider app says "The bank did not help": the bank refused or did not answer, and the page shows the
+  status and the contract's code. `503` without a code: the provider app could not reach Traefik or Keycloak
+  (`kubectl -n provider logs deploy/provider-app`). `invalid_client` from the bank's sign-in: Keycloak holds
+  another certificate for `provider-app` than the one in `provider-app-tls`; run `bash scripts/cluster-up.sh`.
+- The provider app's pod shows `CreateContainerConfigError` with `secret "provider-app-tls" not found`: the
+  cluster is older than 0.8.0. Run `bash scripts/cluster-up.sh`; it restarts the provider app once the Secret is
+  there.
+- The smoke test's provider journey says `a return to the provider app with another state is refused: HTTP 302`
+  or similar: the provider app took a return that did not belong to its visit. Look at `Journey` and
+  `ProviderController`; nothing should change on such a return.
+- `the trace collector did not take the canary span`: the collector is not running or refused the span; its log
+  says which (`kubectl -n logging logs deploy/trace-collector`). A `memory_limiter` message means it is short of
+  memory: give `traceCollector.resources` in the logging chart's values more.
+- `the canary span did not arrive as a transaction and an error`: follow it. The collector's log shows whether it
+  sent the span on, APM Server's (`kubectl -n logging logs deploy/bank-traces-apm-server`) whether it took it and
+  what Elasticsearch answered.
+- `the canary span was stored with what the collector must remove or mask`: the collector runs another
+  configuration than this version's `collector.yaml`, and the spans Elasticsearch takes in are not masked until it
+  is back. `kubectl -n logging get configmap trace-collector -o yaml` shows what it runs; `bash
+  scripts/cluster-up.sh` puts this version's back.
+- No traces from a service: its chart is older than bank-open-api 0.8.0 or bank-core 0.9.0 and sets no
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`; build its job again. No traces from Traefik or Keycloak: `cluster-up.sh`
+  has not run since 0.8.0.
+- `a pod of the bank reaches APM Server` or `reaches the trace collector`: the logging stack's network policies are
+  not enforced, as with the bank's (`--disable-network-policy`).
+- Kibana's APM app asks for a license on the service map: the map is a Platinum feature; the stack runs on the
+  free Basic license. Everything else in the APM app works.
